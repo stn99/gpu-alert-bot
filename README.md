@@ -84,3 +84,8 @@ gh workflow run "GPU scan"
 
 Secrets for the local copy live in `config.local.json` (git-ignored); `--setup-telegram`
 writes them there.
+
+**Tested 2026-11-04: both sites answer GitHub's runners with HTTP 403 (bot
+protection on datacenter IP ranges), so the cloud workflows are disabled. The bot
+has to run from a home internet connection: this PC, or any always-on device at
+home such as a Raspberry Pi or an old laptop.**
