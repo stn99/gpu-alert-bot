@@ -47,6 +47,9 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 BAZARAKI_GPU_URL = "https://www.bazaraki.com/computers-and-games/hardware/gpu/?ordering=newest&page={page}"
 VENDORA_PARTS_URL = "https://vendora.cy/browse/qrzg1v/components-accessories.html?sort=recent&page={page}"
 VENDORA_SEARCH_URL = "https://vendora.cy/browse/7vwxzr/computers-tablets-peripherals.html?sort=recent&q={q}"
+# site-wide keyword searches, used by the "keyword_watches" in config.json
+BAZARAKI_SEARCH_URL = "https://www.bazaraki.com/search/?q={q}&ordering=newest"
+VENDORA_ANY_SEARCH_URL = "https://vendora.cy/items?q={q}&sort=recent"
 
 
 # --------------------------------------------------------------------------- utils
@@ -117,9 +120,13 @@ def vram_in_title(norm):
 
 # ------------------------------------------------------------------------ scrapers
 def scrape_bazaraki(pages):
+    return scrape_bazaraki_urls([BAZARAKI_GPU_URL.format(page=p) for p in range(1, pages + 1)])
+
+
+def scrape_bazaraki_urls(urls):
     out = []
-    for page in range(1, pages + 1):
-        h = fetch(BAZARAKI_GPU_URL.format(page=page))
+    for url in urls:
+        h = fetch(url)
         if not h:
             continue
         chunks = h.split('data-marker="listing-advert_card-advert:')[1:]
@@ -154,6 +161,10 @@ def scrape_bazaraki(pages):
 def scrape_vendora(pages, searches):
     urls = [VENDORA_PARTS_URL.format(page=p) for p in range(1, pages + 1)]
     urls += [VENDORA_SEARCH_URL.format(q=urllib.parse.quote(q)) for q in searches]
+    return scrape_vendora_urls(urls)
+
+
+def scrape_vendora_urls(urls):
     out, seen = [], set()
     for url in urls:
         h = fetch(url)
@@ -187,7 +198,29 @@ def compile_config(cfg):
     cfg["_exclude"] = [re.compile(p, re.I) for p in cfg.get("exclude_title_patterns", [])]
     for g in cfg["gpus"]:
         g["_re"] = re.compile(g["pattern"], re.I)
+    for w in cfg.get("keyword_watches", []):
+        w["_re"] = re.compile(w["pattern"], re.I)
+        w["_exclude"] = [re.compile(p, re.I) for p in w.get("exclude", [])]
     return cfg
+
+
+def classify_watch(listing, watch, cfg):
+    """Keyword watch: alert on any title matching the pattern, optional max_eur."""
+    title = listing["title"]
+    for rx in watch["_exclude"]:
+        if rx.search(title):
+            return None, "skip", [f"excluded by /{rx.pattern}/"]
+    if not watch["_re"].search(normalise_title(title)):
+        return None, "skip", ["pattern not in title"]
+    price = listing["price"]
+    max_eur = watch.get("max_eur")
+    listing["ceiling"] = float(max_eur) if max_eur else None
+    notes = []
+    if price is None or price <= 0:
+        notes.append("no price shown - ask the seller")
+    elif max_eur and price > float(max_eur):
+        return watch, "above", [f"{price:.0f} > ceiling {max_eur}"]
+    return watch, "deal", notes
 
 
 def classify(listing, cfg):
@@ -302,7 +335,9 @@ def setup_telegram(token):
 def format_deal(listing, gpu, notes, kind):
     tag = "PRICE DROP" if kind == "drop" else "NEW"
     extra = " | ".join(x for x in [listing.get("when"), listing.get("location"), listing.get("seller")] if x)
-    head = f"[{tag}] {gpu['name']} - EUR {listing['price']:.0f} (ceiling {listing['ceiling']:.0f}) on {listing['site']}"
+    price_txt = f"EUR {listing['price']:.0f}" if listing.get("price") else "no price"
+    ceil_txt = f" (ceiling {listing['ceiling']:.0f})" if listing.get("ceiling") else ""
+    head = f"[{tag}] {gpu['name']} - {price_txt}{ceil_txt} on {listing['site']}"
     lines = [head, listing["title"]]
     if extra:
         lines.append(extra)
@@ -328,7 +363,8 @@ def send_alerts(deals, cfg, dry_run=False):
                      deals[0][1]["url"])
     for text, listing, gpu in deals[:12]:
         if toast_on and len(deals) <= 3:
-            notify_toast(f"{gpu['name']} - EUR {listing['price']:.0f} ({listing['site']})",
+            price_txt = f"EUR {listing['price']:.0f}" if listing.get("price") else "no price"
+            notify_toast(f"{gpu['name']} - {price_txt} ({listing['site']})",
                          listing["title"][:120], listing["url"])
         safe = html.escape(text.rsplit("\n", 1)[0])
         notify_telegram(cfg, f"{safe}\n<a href=\"{listing['url']}\">open listing</a>")
@@ -357,12 +393,32 @@ def scan(cfg, dry_run=False, list_all=False):
     src = cfg.get("sources", {})
     listings = scrape_bazaraki(src.get("bazaraki_pages", 2)) + \
         scrape_vendora(src.get("vendora_pages", 2), src.get("vendora_searches", ["rtx", "radeon"]))
+    # keyword watches: site-wide searches, classified by their own pattern
+    gpu_ids = {l["id"] for l in listings}
+    watched = []
+    for w in cfg.get("keyword_watches", []):
+        terms = [urllib.parse.quote(q) for q in w.get("searches", [])]
+        found = scrape_bazaraki_urls([BAZARAKI_SEARCH_URL.format(q=q) for q in terms]) + \
+            scrape_vendora_urls([VENDORA_ANY_SEARCH_URL.format(q=q) for q in terms])
+        seen_here = set()
+        for l in found:
+            if l["id"] in gpu_ids or l["id"] in seen_here:
+                continue
+            seen_here.add(l["id"])
+            watched.append((l, w))
+
     state = load_json(STATE_PATH, {})
     now = dt.datetime.now().isoformat(timespec="seconds")
     deals = []
     rows = []
-    for lst in listings:
-        gpu, verdict, notes = classify(lst, cfg)
+    items = [(l, None) for l in listings] + watched
+    for lst, watch in items:
+        if watch is None:
+            gpu, verdict, notes = classify(lst, cfg)
+        else:
+            gpu, verdict, notes = classify_watch(lst, watch, cfg)
+            if verdict == "skip":
+                continue   # unrelated search hit, do not even remember it
         if list_all and gpu and verdict != "skip":
             rows.append((lst, gpu, verdict, notes))
         prev = state.get(lst["id"])
@@ -388,7 +444,8 @@ def scan(cfg, dry_run=False, list_all=False):
 
     nb = sum(1 for l in listings if l["site"] == "bazaraki")
     nv = sum(1 for l in listings if l["site"] == "vendora")
-    log(f"scanned {len(listings)} listings ({nb} bazaraki, {nv} vendora) -> {len(deals)} new deal(s)")
+    log(f"scanned {len(listings)} GPU listings ({nb} bazaraki, {nv} vendora) + {len(watched)} keyword-search results "
+        f"-> {len(deals)} new deal(s)")
     if (nb == 0 or nv == 0) and not dry_run:
         # a site returned nothing: blocked, down or changed layout. Warn on Telegram at most once a day.
         meta = state.setdefault("_meta", {})
@@ -402,11 +459,11 @@ def scan(cfg, dry_run=False, list_all=False):
             save_json(STATE_PATH, state)
 
     if list_all:
-        rows.sort(key=lambda r: (r[0]["price"] or 0) / max(r[0].get("ceiling", 1), 1))
+        rows.sort(key=lambda r: (r[0]["price"] or 0) / max(r[0].get("ceiling") or 1, 1))
         print(f"\n{'site':9} {'price':>7} {'ceiling':>8}  {'model':22} title")
         for lst, gpu, verdict, notes in rows:
             flag = "DEAL " if verdict == "deal" else "     "
-            print(f"{lst['site']:9} {lst['price'] or 0:7.0f} {lst.get('ceiling', 0):8.0f} {flag}{gpu['name']:22} "
+            print(f"{lst['site']:9} {lst['price'] or 0:7.0f} {lst.get('ceiling') or 0:8.0f} {flag}{gpu['name']:22} "
                   f"{lst['title'][:70]}  {lst['url']}")
     send_alerts(deals, cfg, dry_run=dry_run)
     return deals

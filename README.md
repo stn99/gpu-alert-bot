@@ -89,3 +89,17 @@ writes them there.
 protection on datacenter IP ranges), so the cloud workflows are disabled. The bot
 has to run from a home internet connection: this PC, or any always-on device at
 home such as a Raspberry Pi or an old laptop.**
+
+## Keyword watches (anything, not just GPUs)
+
+`keyword_watches` in `config.json` runs site-wide keyword searches on both sites
+and alerts on any title matching `pattern`, with an optional `max_eur` (null = any
+price). The first one watches for a DF64 coffee grinder:
+
+```json
+{ "name": "DF64 coffee grinder",
+  "searches": ["df64", "df 64", "turin grinder", "coffee grinder"],
+  "pattern": "\bdf\s*64|\bturin\b|g\s*-?\s*iota",
+  "exclude": ["\bwtb\b", "looking for"],
+  "max_eur": null }
+```
