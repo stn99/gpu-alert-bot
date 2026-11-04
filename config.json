@@ -18,7 +18,7 @@
     {
       "name": "DF64 coffee grinder",
       "searches": ["df64", "df 64", "turin grinder", "coffee grinder", "espresso grinder", "μύλος καφέ"],
-      "pattern": "\\bdf\\s*64|\\bturin\\b.*(grind|μ[υύ]λ)|g\\s*-?\\s*iota",
+      "pattern": "\\bdf\\s*64|^(?=.*\\bturin\\b)(?=.*(grind|μ[υύ]λ))|g\\s*-?\\s*iota",
       "exclude": ["\\bwtb\\b", "looking for", "ζητ", "\\bwanted\\b"],
       "max_eur": null
     }
