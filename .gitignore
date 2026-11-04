@@ -1,0 +1,6 @@
+# runtime state and secrets - never commit
+seen.json
+*.log
+*.tmp
+config.local.json
+__pycache__/

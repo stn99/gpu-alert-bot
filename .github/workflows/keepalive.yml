@@ -1,0 +1,22 @@
+name: Keep schedule alive
+
+# GitHub disables scheduled workflows after 60 days without repository activity.
+# An empty commit twice a month keeps the GPU scan schedule running.
+on:
+  schedule:
+    - cron: "0 3 1,15 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  touch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "keepalive: keep scheduled scans enabled"
+          git push

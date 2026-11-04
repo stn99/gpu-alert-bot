@@ -1,0 +1,63 @@
+{
+  "_help": "max_eur = the most this card is worth to you second-hand (EUR). Effective ceiling = min(budget_eur, max_eur). Values are Nov-2026 estimates from eBay sold-price trackers minus ~10% (Cyprus has no buyer protection) - tune them with: python gpu_alert.py --list",
+  "budget_eur": 600,
+  "poll_minutes": 5,
+  "great_deal_ratio": 0.8,
+  "scam_ratio": 0.4,
+  "windows_toast": true,
+  "telegram": {
+    "bot_token": "",
+    "chat_id": ""
+  },
+  "sources": {
+    "bazaraki_pages": 3,
+    "vendora_pages": 2,
+    "vendora_searches": ["rtx", "radeon", "geforce"]
+  },
+  "exclude_title_patterns": [
+    "\\blaptop\\b", "notebook", "λ[άa]πτοπ", "\\bpc\\b", "desktop", "υπολογιστ",
+    "\\btower\\b", "gaming (rig|setup|build)", "\\b(i[3579]|ryzen|core ultra)\\b",
+    "\\bfans?\\b", "\\bcooler\\b", "backplate", "bracket", "water ?block", "\\briser\\b",
+    "\\bcable\\b", "box only", "\\bmonitor\\b", "mining rig", "\\bshroud\\b",
+    "\\bwtb\\b", "looking for", "ζητ", "\\bwanted\\b"
+  ],
+  "gpus": [
+    {"name": "RTX 2060 12GB",      "pattern": "\\b2060\\b(?!\\s*(super|s\\b))",          "vram_gb": 12, "max_eur": 150, "ambiguous_vram": true, "require_vram": true},
+    {"name": "RTX 3060 12GB",      "pattern": "\\b3060\\b(?!\\s*ti)",                    "vram_gb": 12, "max_eur": 200, "ambiguous_vram": true},
+    {"name": "RTX 3080 12GB",      "pattern": "\\b3080\\b(?!\\s*ti)",                    "vram_gb": 12, "max_eur": 400, "ambiguous_vram": true},
+    {"name": "RTX 3080 Ti",        "pattern": "\\b3080\\s*ti\\b",                        "vram_gb": 12, "max_eur": 430},
+    {"name": "RTX 3090",           "pattern": "\\b3090\\b(?!\\s*ti)",                    "vram_gb": 24, "max_eur": 600},
+    {"name": "RTX 3090 Ti",        "pattern": "\\b3090\\s*ti\\b",                        "vram_gb": 24, "max_eur": 600},
+    {"name": "RTX 4070",           "pattern": "\\b4070\\b(?!\\s*(ti|super|s\\b))",       "vram_gb": 12, "max_eur": 460},
+    {"name": "RTX 4070 Super",     "pattern": "\\b4070\\s*(super|s\\b)",                 "vram_gb": 12, "max_eur": 520},
+    {"name": "RTX 4070 Ti",        "pattern": "\\b4070\\s*ti\\b(?!\\s*(super|s\\b))",    "vram_gb": 12, "max_eur": 520},
+    {"name": "RTX 4070 Ti Super",  "pattern": "\\b4070\\s*ti\\s*(super|s\\b)",           "vram_gb": 16, "max_eur": 600},
+    {"name": "RTX 4080",           "pattern": "\\b4080\\b(?!\\s*(super|s\\b))",          "vram_gb": 16, "max_eur": 600},
+    {"name": "RTX 4080 Super",     "pattern": "\\b4080\\s*(super|s\\b)",                 "vram_gb": 16, "max_eur": 600},
+    {"name": "RTX 4090",           "pattern": "\\b4090\\b",                              "vram_gb": 24, "max_eur": 600},
+    {"name": "RTX 5060 Ti 16GB",   "pattern": "\\b5060\\s*ti\\b",                        "vram_gb": 16, "max_eur": 390, "ambiguous_vram": true},
+    {"name": "RTX 5070",           "pattern": "\\b5070\\b(?!\\s*ti)",                    "vram_gb": 12, "max_eur": 540},
+    {"name": "RTX 5070 Ti",        "pattern": "\\b5070\\s*ti\\b",                        "vram_gb": 16, "max_eur": 600},
+    {"name": "RTX 5080",           "pattern": "\\b5080\\b",                              "vram_gb": 16, "max_eur": 600},
+    {"name": "RTX 5090",           "pattern": "\\b5090\\b",                              "vram_gb": 32, "max_eur": 600},
+
+    {"name": "RX 6700 XT",         "pattern": "\\b6700\\s*xt\\b",                        "vram_gb": 12, "max_eur": 230},
+    {"name": "RX 6750 XT",         "pattern": "\\b6750\\s*xt\\b",                        "vram_gb": 12, "max_eur": 250},
+    {"name": "RX 6800",            "pattern": "\\b6800\\b(?!\\s*xt)",                    "vram_gb": 16, "max_eur": 300},
+    {"name": "RX 6800 XT",         "pattern": "\\b6800\\s*xt\\b",                        "vram_gb": 16, "max_eur": 340},
+    {"name": "RX 6900 XT",         "pattern": "\\b6900\\s*xt\\b",                        "vram_gb": 16, "max_eur": 370},
+    {"name": "RX 6950 XT",         "pattern": "\\b6950\\s*xt\\b",                        "vram_gb": 16, "max_eur": 400},
+    {"name": "RX 7600 XT",         "pattern": "\\b7600\\s*xt\\b",                        "vram_gb": 16, "max_eur": 250},
+    {"name": "RX 7700 XT",         "pattern": "\\b7700\\s*xt\\b",                        "vram_gb": 12, "max_eur": 340},
+    {"name": "RX 7800 XT",         "pattern": "\\b7800\\s*xt\\b",                        "vram_gb": 16, "max_eur": 450},
+    {"name": "RX 7900 GRE",        "pattern": "\\b7900\\s*gre\\b",                       "vram_gb": 16, "max_eur": 470},
+    {"name": "RX 7900 XT",         "pattern": "\\b7900\\s*xt\\b",                        "vram_gb": 20, "max_eur": 540},
+    {"name": "RX 7900 XTX",        "pattern": "\\b7900\\s*xtx\\b",                       "vram_gb": 24, "max_eur": 600},
+    {"name": "RX 9060 XT 16GB",    "pattern": "\\b9060\\s*xt\\b",                        "vram_gb": 16, "max_eur": 350, "ambiguous_vram": true},
+    {"name": "RX 9070",            "pattern": "\\b9070\\b(?!\\s*xt)",                    "vram_gb": 16, "max_eur": 540},
+    {"name": "RX 9070 XT",         "pattern": "\\b9070\\s*xt\\b",                        "vram_gb": 16, "max_eur": 600},
+
+    {"name": "Arc A770 16GB",      "pattern": "\\ba770\\b",                              "vram_gb": 16, "max_eur": 200, "ambiguous_vram": true},
+    {"name": "Arc B580",           "pattern": "\\bb580\\b",                              "vram_gb": 12, "max_eur": 220}
+  ]
+}

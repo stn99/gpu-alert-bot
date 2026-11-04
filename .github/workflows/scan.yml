@@ -1,0 +1,39 @@
+name: GPU scan
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"     # every 5 minutes (GitHub may delay runs when busy)
+  workflow_dispatch:          # lets you press "Run workflow" manually
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # seen.json (already-alerted listings) is carried between runs via the cache
+      - uses: actions/cache/restore@v4
+        with:
+          path: seen.json
+          key: seen-${{ github.run_id }}
+          restore-keys: seen-
+
+      - name: Scan bazaraki + vendora
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python3 gpu_alert.py
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: seen.json
+          key: seen-${{ github.run_id }}
