@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-GPU deal watcher for bazaraki.com and vendora.cy (Cyprus).
+GPU deal watcher for bazaraki.com and vendora.cy (Cyprus), plus eBay through
+its official Browse API once you have stored developer keys (--setup-ebay).
 
 Scans the newest GPU listings on both sites, recognises the card model from the
 title, checks the VRAM requirement and compares the price against a per-model
@@ -17,10 +18,12 @@ Usage:
   python gpu_alert.py --dry-run      show what would be alerted, change nothing
   python gpu_alert.py --test-notify  send a test toast/Telegram message
   python gpu_alert.py --setup-telegram <TOKEN>   link your Telegram bot (auto-detects chat id)
+  python gpu_alert.py --setup-ebay   store your eBay developer keys, check them, run a test search
 
 Standard library only - no pip installs needed.
 """
 import argparse
+import base64
 import datetime as dt
 import html
 import json
@@ -193,6 +196,255 @@ def scrape_vendora_urls(urls):
     return out
 
 
+# ---------------------------------------------------------------------------- eBay
+# Official Browse API (developer.ebay.com). eBay's User Agreement forbids scraping
+# the website, so eBay is only ever queried through this API with your own keys.
+EBAY_TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
+EBAY_SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+EBAY_SCOPE = "https://api.ebay.com/oauth/api_scope"
+EBAY_TOKEN_PATH = os.path.join(BASE, "ebay_token.json")   # cached 2-hour app token, git-ignored
+EBAY_GPU_CATEGORY = "27386"                                # Graphics/Video Cards (same id on ebay.de)
+EBAY_DEFAULT_GPU_SEARCHES = [
+    "(2060, 3060, 3080, 3090, 4070, 4080, 4090, 5060, 5070, 5080, 5090)",
+    "(6700, 6750, 6800, 6900, 6950, 7600, 7700, 7800, 7900, 9060, 9070, a770, b580)",
+]
+EBAY_SITE_NAMES = {"EBAY_DE": "ebay.de", "EBAY_AT": "ebay.at", "EBAY_IT": "ebay.it", "EBAY_FR": "ebay.fr",
+                   "EBAY_ES": "ebay.es", "EBAY_NL": "ebay.nl", "EBAY_BE": "ebay.be", "EBAY_IE": "ebay.ie"}
+EU_COUNTRIES = {"AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT",
+                "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE"}
+
+
+class EbayError(Exception):
+    def __init__(self, status, msg):
+        super().__init__(f"HTTP {status}: {msg}" if status else msg)
+        self.status = status
+
+
+def ebay_request(url, headers, data=None):
+    req = urllib.request.Request(url, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode("utf-8", "replace") or "{}")
+    except urllib.error.HTTPError as e:
+        raise EbayError(e.code, e.read().decode("utf-8", "replace")[:300]) from None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+        raise EbayError(0, str(e)) from None
+
+
+def ebay_creds(cfg):
+    """Environment variables win, then "ebay_keys" in config.local.json."""
+    keys = cfg.get("ebay_keys") or {}
+    cid = os.environ.get("EBAY_CLIENT_ID") or keys.get("client_id", "")
+    secret = os.environ.get("EBAY_CLIENT_SECRET") or keys.get("client_secret", "")
+    return cid.strip(), secret.strip()
+
+
+def ebay_token(cfg, force=False):
+    """Application token (client credentials grant), cached until shortly before it expires."""
+    cid, secret = ebay_creds(cfg)
+    if not cid or not secret:
+        raise EbayError(0, "no eBay keys configured (run: python gpu_alert.py --setup-ebay)")
+    cached = load_json(EBAY_TOKEN_PATH, {}) or {}
+    if not force and cached.get("client_id") == cid and cached.get("expires_at", 0) > time.time() + 300:
+        return cached["access_token"]
+    basic = base64.b64encode(f"{cid}:{secret}".encode()).decode()
+    body = urllib.parse.urlencode({"grant_type": "client_credentials", "scope": EBAY_SCOPE}).encode()
+    data = ebay_request(EBAY_TOKEN_URL, {"Authorization": "Basic " + basic,
+                                         "Content-Type": "application/x-www-form-urlencoded"}, body)
+    token = data.get("access_token")
+    if not token:
+        raise EbayError(0, "eBay token response had no access_token")
+    try:
+        save_json(EBAY_TOKEN_PATH, {"client_id": cid, "access_token": token,
+                                    "expires_at": time.time() + int(data.get("expires_in") or 7200)})
+    except OSError:
+        pass
+    return token
+
+
+def ebay_search(cfg, token, marketplace, q, category=None, filters=(), limit=200):
+    ecfg = cfg.get("ebay") or {}
+    params = {"q": q, "sort": "newlyListed", "limit": str(limit)}
+    if category:
+        params["category_ids"] = str(category)
+    if filters:
+        params["filter"] = ",".join(filters)
+    url = EBAY_SEARCH_URL + "?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+    country = str(ecfg.get("deliver_to", "CY")).upper()
+    headers = {"Authorization": "Bearer " + token,
+               "X-EBAY-C-MARKETPLACE-ID": marketplace,
+               # buyer location, so shipping costs are estimated for delivery to Cyprus
+               "X-EBAY-C-ENDUSERCTX": "contextualLocation=" + urllib.parse.quote(f"country={country}", safe=""),
+               "Accept": "application/json"}
+    return ebay_request(url, headers).get("itemSummaries") or []
+
+
+def _eur(amount):
+    amount = amount or {}
+    if amount.get("currency") != "EUR":
+        return None
+    try:
+        return float(amount.get("value"))
+    except (TypeError, ValueError):
+        return None
+
+
+def ebay_item_to_listing(item, marketplace, cfg):
+    """Browse API item summary -> the bot's listing dict. 'price' is what it costs delivered to you."""
+    ecfg = cfg.get("ebay") or {}
+    value = _eur(item.get("price"))
+    ship = None
+    for opt in item.get("shippingOptions") or []:
+        cost = _eur(opt.get("shippingCost"))
+        if cost is not None:
+            ship = cost if ship is None else min(ship, cost)
+    loc = item.get("itemLocation") or {}
+    country = str(loc.get("country") or "").upper()
+    seller = item.get("seller") or {}
+    score = seller.get("feedbackScore")
+    notes, total = [], None
+    if value is not None:
+        total = value + (ship or 0)
+        if ship is None:
+            notes.append("shipping cost not shown - check it in the listing")
+        elif ship == 0:
+            notes.append(f"item {value:.0f}, free shipping")
+        else:
+            notes.append(f"item {value:.0f} + shipping {ship:.0f}")
+        vat = float(ecfg.get("non_eu_import_vat_pct", 19) or 0)
+        if country and country not in EU_COUNTRIES and vat:
+            total *= 1 + vat / 100
+            notes.append(f"ships from {country}: {vat:.0f}% import VAT already added to the price, customs fee possible")
+    if item.get("itemGroupHref") or item.get("itemGroupType"):
+        notes.append("listing has several variants - the price may be for a different card")
+    if isinstance(score, int) and score < int(ecfg.get("warn_feedback_below", 10)):
+        notes.append(f"seller has only {score} ratings - pay through eBay checkout only")
+    if item.get("condition"):
+        notes.append(str(item["condition"]))
+    when = str(item.get("itemCreationDate") or "")[:16].replace("T", " ")
+    who = seller.get("username", "")
+    if who and score is not None:
+        who += f" ({score} ratings, {seller.get('feedbackPercentage', '?')}%)"
+    return {
+        "site": EBAY_SITE_NAMES.get(marketplace, marketplace.lower()),
+        "id": "eb:" + str(item.get("legacyItemId") or item.get("itemId")),
+        "title": item.get("title", ""),
+        "price": round(total, 2) if total is not None else None,
+        "url": item.get("itemWebUrl", ""),
+        "when": f"listed {when} UTC" if when else "",
+        "location": ", ".join(x for x in [loc.get("city"), country] if x),
+        "seller": who,
+        "ceiling_factor": float(ecfg.get("ceiling_factor", 1.0) or 1.0),
+        "extra_notes": notes,
+    }
+
+
+def ebay_due(cfg, force=False):
+    """True when eBay keys exist and every_minutes have passed since the last eBay search."""
+    ecfg = cfg.get("ebay") or {}
+    if not ecfg.get("enabled", True) or not all(ebay_creds(cfg)):
+        return False
+    if force:
+        return True
+    last = (load_json(STATE_PATH, {}) or {}).get("_meta", {}).get("ebay_last", 0)
+    return time.time() - float(last or 0) >= 60 * float(ecfg.get("every_minutes", 10)) - 30
+
+
+def ebay_scan(cfg):
+    """GPU searches plus keyword watches marked "ebay": true.
+    Returns ([(listing, watch or None)], error text or None)."""
+    ecfg = cfg.get("ebay") or {}
+    budget = float(cfg.get("budget_eur", 600))
+    jobs = [(q, ecfg.get("gpu_category", EBAY_GPU_CATEGORY), budget, None)
+            for q in ecfg.get("gpu_searches") or EBAY_DEFAULT_GPU_SEARCHES]
+    for w in cfg.get("keyword_watches", []):
+        terms = w.get("ebay_searches") or w.get("searches") or []
+        if w.get("ebay") and terms:
+            q = terms[0] if len(terms) == 1 else "(" + ", ".join(terms) + ")"
+            jobs.append((q, w.get("ebay_category"), w.get("max_eur"), w))
+    excl = [re.compile(p, re.I) for p in ecfg.get("exclude_title_patterns", [])]
+    country = str(ecfg.get("deliver_to", "CY")).upper()
+    out, seen = [], set()
+    try:
+        token = ebay_token(cfg)
+        for mp in ecfg.get("marketplaces") or ["EBAY_DE"]:
+            for q, category, max_price, watch in jobs:
+                filters = ["buyingOptions:{FIXED_PRICE}", f"deliveryCountry:{country}"]
+                if max_price:
+                    filters += [f"price:[..{float(max_price):g}]", "priceCurrency:EUR"]
+                try:
+                    items = ebay_search(cfg, token, mp, q, category, filters)
+                except EbayError as e:
+                    if e.status != 401:
+                        raise
+                    token = ebay_token(cfg, force=True)   # token expired early: renew once
+                    items = ebay_search(cfg, token, mp, q, category, filters)
+                for it in items:
+                    if "AUCTION" in (it.get("buyingOptions") or []):
+                        continue   # auction price is not final
+                    if str(it.get("conditionId")) == "7000":
+                        continue   # for parts / not working
+                    if any(rx.search(it.get("title", "")) for rx in excl):
+                        continue
+                    lst = ebay_item_to_listing(it, mp, cfg)
+                    key = (lst["id"], watch["name"] if watch else "")
+                    if key not in seen:
+                        seen.add(key)
+                        out.append((lst, watch))
+                time.sleep(0.5)
+    except EbayError as e:
+        log(f"EBAY FAILED: {e}")
+        return out, str(e)
+    return out, None
+
+
+def setup_ebay(cfg):
+    """Ask for the eBay production keys, check them with eBay, store them in config.local.json."""
+    print("In developer.ebay.com open Application Keys and use the Production keyset:\n"
+          "App ID = Client ID, Cert ID = Client Secret.")
+    cid = os.environ.get("EBAY_CLIENT_ID") or input("App ID (Client ID): ")
+    secret = os.environ.get("EBAY_CLIENT_SECRET")
+    if not secret:
+        try:
+            import getpass
+            secret = getpass.getpass("Cert ID (Client Secret, hidden while you paste): ")
+        except Exception:  # noqa: BLE001
+            secret = input("Cert ID (Client Secret): ")
+    cid, secret = (cid or "").strip(), (secret or "").strip()
+    if not cid or not secret:
+        sys.exit("Both keys are needed.")
+    if "-SBX-" in cid.upper():
+        sys.exit("That is a Sandbox key (it contains SBX). Use the Production keyset instead.")
+    cfg = dict(cfg, ebay_keys={"client_id": cid, "client_secret": secret})
+    try:
+        token = ebay_token(cfg, force=True)
+    except EbayError as e:
+        sys.exit(f"eBay did not accept these keys: {e}\nIf the keyset is shown as disabled, finish the "
+                 "'marketplace account deletion' exemption in the developer portal, then retry.")
+    local = load_json(LOCAL_CONFIG_PATH, {}) or {}
+    local["ebay_keys"] = cfg["ebay_keys"]
+    try:
+        save_json(LOCAL_CONFIG_PATH, local)
+    except OSError as e:
+        sys.exit(f"could not write config.local.json: {e}")
+    ecfg = cfg.get("ebay") or {}
+    mp = (ecfg.get("marketplaces") or ["EBAY_DE"])[0]
+    country = str(ecfg.get("deliver_to", "CY")).upper()
+    try:
+        items = ebay_search(cfg, token, mp, "rtx 4070", ecfg.get("gpu_category", EBAY_GPU_CATEGORY),
+                            ["buyingOptions:{FIXED_PRICE}", f"deliveryCountry:{country}"], limit=5)
+    except EbayError as e:
+        sys.exit(f"Keys saved to config.local.json, but the test search failed: {e}")
+    print(f"eBay keys work and are saved in config.local.json. Test search on {mp} for 'rtx 4070' "
+          f"shipping to {country}:")
+    for it in items:
+        lst = ebay_item_to_listing(it, mp, cfg)
+        print(f"  EUR {lst['price'] or 0:7.0f}  {lst['title'][:70]}  ({lst['location']})")
+    if not items:
+        print("  (no results - unusual, but the keys themselves are fine)")
+    print("The scheduled scans will now include eBay automatically.")
+
+
 # ------------------------------------------------------------------------ matching
 def compile_config(cfg):
     cfg["_exclude"] = [re.compile(p, re.I) for p in cfg.get("exclude_title_patterns", [])]
@@ -253,7 +505,8 @@ def classify(listing, cfg):
     price = listing["price"]
     if price is None or price <= 0:
         return best, "skip", ["no price"]
-    ceiling = min(float(cfg["budget_eur"]), float(best["max_eur"]))
+    # ceiling_factor > 1 lets eBay (which has buyer protection) go a bit above the local ceilings
+    ceiling = min(float(cfg["budget_eur"]), float(best["max_eur"]) * float(listing.get("ceiling_factor", 1.0)))
     listing["ceiling"] = ceiling
     if price > ceiling:
         return best, "above", [f"{price:.0f} > ceiling {ceiling:.0f}"]
@@ -406,6 +659,17 @@ def scan(cfg, dry_run=False, list_all=False):
                 continue
             seen_here.add(l["id"])
             watched.append((l, w))
+    # eBay through its official Browse API (only when keys are configured)
+    ran_ebay, ebay_err, ne = False, None, 0
+    if ebay_due(cfg, force=dry_run or list_all):
+        ran_ebay = True
+        found, ebay_err = ebay_scan(cfg)
+        for lst, w in found:
+            if w is None:
+                listings.append(lst)
+                ne += 1
+            else:
+                watched.append((lst, w))
 
     state = load_json(STATE_PATH, {})
     now = dt.datetime.now().isoformat(timespec="seconds")
@@ -419,6 +683,8 @@ def scan(cfg, dry_run=False, list_all=False):
             gpu, verdict, notes = classify_watch(lst, watch, cfg)
             if verdict == "skip":
                 continue   # unrelated search hit, do not even remember it
+        if verdict == "deal" and lst.get("extra_notes"):
+            notes = notes + lst["extra_notes"]
         if list_all and gpu and verdict != "skip":
             rows.append((lst, gpu, verdict, notes))
         prev = state.get(lst["id"])
@@ -437,6 +703,13 @@ def scan(cfg, dry_run=False, list_all=False):
             if verdict == "deal":
                 entry["alerted"] = True
             state[lst["id"]] = entry
+    if ran_ebay and not dry_run:
+        meta = state.setdefault("_meta", {})
+        meta["ebay_last"] = time.time()
+        if ebay_err and meta.get("ebay_warned", "") < (dt.datetime.now() - dt.timedelta(hours=24)).isoformat():
+            notify_telegram(cfg, f"GPU Alert Bot warning: the eBay search failed ({html.escape(ebay_err[:200])}). "
+                                 "Check the keys with: python gpu_alert.py --setup-ebay")
+            meta["ebay_warned"] = now
     if not dry_run:
         cutoff = (dt.datetime.now() - dt.timedelta(days=90)).isoformat()
         state = {k: v for k, v in state.items() if v.get("last_seen", now) >= cutoff}
@@ -444,7 +717,8 @@ def scan(cfg, dry_run=False, list_all=False):
 
     nb = sum(1 for l in listings if l["site"] == "bazaraki")
     nv = sum(1 for l in listings if l["site"] == "vendora")
-    log(f"scanned {len(listings)} GPU listings ({nb} bazaraki, {nv} vendora) + {len(watched)} keyword-search results "
+    ebay_txt = f", {ne} ebay" if ran_ebay else ""
+    log(f"scanned {len(listings)} GPU listings ({nb} bazaraki, {nv} vendora{ebay_txt}) + {len(watched)} keyword-search results "
         f"-> {len(deals)} new deal(s)")
     if (nb == 0 or nv == 0) and not dry_run:
         # a site returned nothing: blocked, down or changed layout. Warn on Telegram at most once a day.
@@ -482,6 +756,8 @@ def main():
     ap.add_argument("--test-notify", action="store_true", help="send a test notification and exit")
     ap.add_argument("--setup-telegram", nargs="?", const="", metavar="BOT_TOKEN",
                     help="store the Telegram bot token, auto-detect your chat id, send a test")
+    ap.add_argument("--setup-ebay", action="store_true",
+                    help="store your eBay developer keys (official Browse API), check them, run a test search")
     args = ap.parse_args()
 
     if args.setup_telegram is not None:
@@ -493,6 +769,10 @@ def main():
         sys.exit("config.json missing or invalid")
     raw.update(load_json(LOCAL_CONFIG_PATH, {}) or {})   # secrets / personal overrides
     cfg = compile_config(raw)
+
+    if args.setup_ebay:
+        setup_ebay(cfg)
+        return
 
     if args.test_notify:
         notify_toast("GPU Alert Bot", "Test notification - toasts are working.",

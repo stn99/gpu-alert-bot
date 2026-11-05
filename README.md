@@ -1,4 +1,4 @@
-# GPU Alert Bot (bazaraki.com + vendora.cy)
+# GPU Alert Bot (bazaraki.com + vendora.cy + eBay)
 
 Watches the newest GPU listings on both Cypriot marketplaces and alerts you when a
 card with **12 GB VRAM or more** shows up at or below what it is worth second-hand
@@ -103,3 +103,33 @@ price). The first one watches for a DF64 coffee grinder:
   "exclude": ["\bwtb\b", "looking for"],
   "max_eur": null }
 ```
+
+## eBay (official API, needs free developer keys)
+
+eBay's User Agreement forbids scraping the website, so the bot only talks to
+eBay through the official **Browse API**, which is free and allowed.
+
+1. Join the eBay Developers Program at developer.ebay.com with your eBay account
+   (approval can take a day or two).
+2. Create an application and open its **Production** keyset.
+3. In the "marketplace account deletion" step choose the exemption: the bot does
+   not store any eBay user data. Until this is done the production keys stay disabled.
+4. Run `python gpu_alert.py --setup-ebay` and paste the App ID (Client ID) and
+   Cert ID (Client Secret). It checks them with eBay, saves them to the git-ignored
+   `config.local.json` and runs a test search. From then on every scheduled scan
+   includes eBay.
+
+How eBay listings are judged (`ebay` section of `config.json`):
+
+* Only Buy It Now listings that ship to Cyprus (`deliver_to`), newest first, on the
+  `marketplaces` you list (default eBay.de). Auctions and "for parts" items are skipped.
+* The price compared with the ceiling is item + shipping to Cyprus. For sellers
+  outside the EU (UK, US, China...) `non_eu_import_vat_pct` (19) is added on top.
+* `ceiling_factor` (default 1.0) multiplies `gpus[].max_eur` for eBay only. The local
+  ceilings are about 10 percent under eBay sold prices because local deals have no
+  buyer protection; eBay does, so 1.1 is a reasonable value if you want more eBay alerts.
+* `every_minutes` (10) limits how often eBay is asked; that is about 300 of the
+  5,000 free API calls per day.
+* A keyword watch can search eBay too by adding `"ebay": true` (optionally with its own
+  `"ebay_searches"`). The DF64 watch has it off, because at "any price" every new
+  DF64 sold by a shop would alert.

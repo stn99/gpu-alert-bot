@@ -4,3 +4,4 @@ seen.json
 *.tmp
 config.local.json
 __pycache__/
+ebay_token.json

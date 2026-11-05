@@ -14,13 +14,34 @@
     "vendora_pages": 2,
     "vendora_searches": ["rtx", "radeon", "geforce"]
   },
+  "ebay": {
+    "_help": "Official eBay Browse API. Runs only after you store your developer keys with: python gpu_alert.py --setup-ebay. Searches Buy It Now listings that ship to deliver_to, newest first, at most budget_eur. price = item + shipping (+ non_eu_import_vat_pct for sellers outside the EU). ceiling_factor multiplies gpus[].max_eur for eBay only: eBay has buyer protection, so 1.1 means paying up to the full used value. Use euro marketplaces only (EBAY_DE, EBAY_IT, EBAY_FR, EBAY_ES, EBAY_NL, EBAY_AT...).",
+    "enabled": true,
+    "every_minutes": 10,
+    "marketplaces": ["EBAY_DE"],
+    "deliver_to": "CY",
+    "gpu_category": "27386",
+    "gpu_searches": [
+      "(2060, 3060, 3080, 3090, 4070, 4080, 4090, 5060, 5070, 5080, 5090)",
+      "(6700, 6750, 6800, 6900, 6950, 7600, 7700, 7800, 7900, 9060, 9070, a770, b580)"
+    ],
+    "ceiling_factor": 1.0,
+    "non_eu_import_vat_pct": 19,
+    "warn_feedback_below": 10,
+    "exclude_title_patterns": [
+      "defekt", "kaputt", "bastler", "ersatzteil", "ohne funktion", "for parts", "faulty",
+      "not working", "\\bbroken\\b", "\\bsuche\\b", "nur (ovp|karton|verpackung)",
+      "wasserk[üu]hler", "\\bk[üu]hler f[üu]r\\b"
+    ]
+  },
   "keyword_watches": [
     {
       "name": "DF64 coffee grinder",
       "searches": ["df64", "df 64", "turin grinder", "coffee grinder", "espresso grinder", "μύλος καφέ"],
       "pattern": "\\bdf\\s*64|^(?=.*\\bturin\\b)(?=.*(grind|μ[υύ]λ))|g\\s*-?\\s*iota",
       "exclude": ["\\bwtb\\b", "looking for", "ζητ", "\\bwanted\\b"],
-      "max_eur": null
+      "max_eur": null,
+      "ebay": false
     }
   ],
   "exclude_title_patterns": [
