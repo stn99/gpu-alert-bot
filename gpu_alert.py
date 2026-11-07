@@ -121,6 +121,25 @@ def vram_in_title(norm):
     return [int(n) for n in re.findall(r"\b(\d{1,2})\s*(?:gb|g)\b", norm)]
 
 
+# Words naming a GPU maker (matched on the normalised title). A title that names only
+# another maker is not a match: a 2004 "GeForce 6800" is not an RX 6800.
+BRAND_WORDS = {
+    "NVIDIA": re.compile(r"\b(nvidia|geforce|rtx|gtx|quadro|tesla)\b"),
+    "AMD": re.compile(r"\b(amd|radeon|rx|ati)\b"),
+    "Intel": re.compile(r"\b(intel|arc)\b"),
+}
+# memory given in MB means a card from the 2000s that shares a model number (GeForce 6800 128MB)
+OLD_CARD_MEMORY = re.compile(r"\b(32|64|128|256|512|768)\s*mb?\b")
+
+
+def gpu_brand(gpu):
+    if gpu.get("brand"):
+        return gpu["brand"]
+    name = gpu["name"].lower()
+    return "NVIDIA" if name.startswith(("rtx", "gtx")) else "AMD" if name.startswith("rx") else \
+        "Intel" if name.startswith("arc") else None
+
+
 # ------------------------------------------------------------------------ scrapers
 def scrape_bazaraki(pages):
     return scrape_bazaraki_urls([BAZARAKI_GPU_URL.format(page=p) for p in range(1, pages + 1)])
@@ -210,6 +229,10 @@ EBAY_DEFAULT_GPU_SEARCHES = [
 ]
 EBAY_SITE_NAMES = {"EBAY_DE": "ebay.de", "EBAY_AT": "ebay.at", "EBAY_IT": "ebay.it", "EBAY_FR": "ebay.fr",
                    "EBAY_ES": "ebay.es", "EBAY_NL": "ebay.nl", "EBAY_BE": "ebay.be", "EBAY_IE": "ebay.ie"}
+EBAY_CONDITIONS = {"1000": "New", "1500": "New (other)", "1750": "New with defects",
+                   "2000": "Certified refurbished", "2010": "Refurbished - excellent",
+                   "2020": "Refurbished - very good", "2030": "Refurbished - good",
+                   "2500": "Seller refurbished", "3000": "Used", "7000": "For parts"}
 EU_COUNTRIES = {"AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT",
                 "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE"}
 
@@ -319,8 +342,10 @@ def ebay_item_to_listing(item, marketplace, cfg):
         notes.append("listing has several variants - the price may be for a different card")
     if isinstance(score, int) and score < int(ecfg.get("warn_feedback_below", 10)):
         notes.append(f"seller has only {score} ratings - pay through eBay checkout only")
-    if item.get("condition"):
-        notes.append(str(item["condition"]))
+    # items listed on other eBay sites carry their condition in that language (Usato, Occasion...)
+    condition = EBAY_CONDITIONS.get(str(item.get("conditionId") or ""), item.get("condition"))
+    if condition:
+        notes.append(str(condition))
     when = str(item.get("itemCreationDate") or "")[:16].replace("T", " ")
     who = seller.get("username", "")
     if who and score is not None:
@@ -330,7 +355,8 @@ def ebay_item_to_listing(item, marketplace, cfg):
         "id": "eb:" + str(item.get("legacyItemId") or item.get("itemId")),
         "title": item.get("title", ""),
         "price": round(total, 2) if total is not None else None,
-        "url": item.get("itemWebUrl", ""),
+        "url": item.get("itemWebUrl", "").split("?", 1)[0],   # drop eBay's long tracking query
+        "skip_if_suspiciously_cheap": bool(ecfg.get("skip_suspiciously_cheap", True)),
         "when": f"listed {when} UTC" if when else "",
         "location": ", ".join(x for x in [loc.get("city"), country] if x),
         "seller": who,
@@ -491,7 +517,17 @@ def classify(listing, cfg):
     if not best:
         return None, "skip", ["no known GPU in title"]
 
+    brand = gpu_brand(best)
+    if brand:
+        others = [b for b, rx in BRAND_WORDS.items() if b != brand and rx.search(norm)]
+        if others and not BRAND_WORDS[brand].search(norm):
+            return best, "skip", [f"title is for an {others[0]} card, not a {best['name']}"]
     vrams = vram_in_title(norm)
+    if OLD_CARD_MEMORY.search(norm) and not vrams:
+        return best, "skip", ["memory given in MB - an old card with the same number"]
+    if not best.get("ambiguous_vram") and vrams and max(vrams) < best["vram_gb"]:
+        return best, "skip", [f"title says {max(vrams)}GB but a {best['name']} has {best['vram_gb']}GB "
+                              "- another card or a part"]
     if best.get("ambiguous_vram"):
         if any(v >= 12 for v in vrams):
             pass
@@ -511,6 +547,10 @@ def classify(listing, cfg):
     if price > ceiling:
         return best, "above", [f"{price:.0f} > ceiling {ceiling:.0f}"]
     if price < ceiling * cfg.get("scam_ratio", 0.4):
+        if listing.get("skip_if_suspiciously_cheap"):
+            # on eBay a "card" this cheap is a cooler, a box, a photo or a fake, not a deal
+            return best, "skip", [f"{price:.0f} is under {cfg.get('scam_ratio', 0.4):g} x ceiling - "
+                                  "a part, box or fake"]
         notes.append("SUSPICIOUSLY CHEAP - likely scam, never pay in advance")
     elif price <= ceiling * cfg.get("great_deal_ratio", 0.8):
         notes.append("GREAT DEAL")

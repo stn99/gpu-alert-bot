@@ -125,6 +125,15 @@ How eBay listings are judged (`ebay` section of `config.json`):
   `marketplaces` you list (default eBay.de). Auctions and "for parts" items are skipped.
 * The price compared with the ceiling is item + shipping to Cyprus. For sellers
   outside the EU (UK, US, China...) `non_eu_import_vat_pct` (19) is added on top.
+* On eBay a "card" under `scam_ratio` x its ceiling (40%) is skipped instead of alerted
+  (`skip_suspiciously_cheap`): in practice those are coolers, empty boxes, "ohne Core &
+  VRAM" donor boards or fakes. Set it to `false` to get them with a warning instead.
+  German part words (Kühler, Halter, ohne Core, für Teile...) are in the eBay
+  `exclude_title_patterns`.
+* On every site a title is skipped when it names only another maker (a 2004
+  "GeForce 6800" is not an RX 6800), gives the memory in MB, or states less VRAM than
+  the model has (a "16GB" listing is not an RTX 4090). "Dual/Triple Fan" cards are not
+  treated as loose fans.
 * `ceiling_factor` (default 1.0) multiplies `gpus[].max_eur` for eBay only. The local
   ceilings are about 10 percent under eBay sold prices because local deals have no
   buyer protection; eBay does, so 1.1 is a reasonable value if you want more eBay alerts.

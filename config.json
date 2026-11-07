@@ -28,10 +28,15 @@
     "ceiling_factor": 1.0,
     "non_eu_import_vat_pct": 19,
     "warn_feedback_below": 10,
+    "skip_suspiciously_cheap": true,
+    "_help_skip": "skip_suspiciously_cheap: on eBay a card under scam_ratio x its ceiling is in practice a cooler, box, photo or fake, so it is dropped instead of alerted. Set false to get those alerts with a warning instead.",
     "exclude_title_patterns": [
-      "defekt", "kaputt", "bastler", "ersatzteil", "ohne funktion", "for parts", "faulty",
-      "not working", "\\bbroken\\b", "\\bsuche\\b", "nur (ovp|karton|verpackung)",
-      "wasserk[üu]hler", "\\bk[üu]hler f[üu]r\\b"
+      "defekt", "kaputt", "bastler", "\\bersatz", "ohne funktion", "for parts", "faulty",
+      "not working", "\\bbroken\\b", "\\bsuche\\b", "nur (ovp|karton|verpackung)", "\\bnur (der|die|das|den)\\b",
+      "ohne (gpu.?)?(core|kern|vram|chip|pcb|grafikkarte|karte)\\b", "kein (gpu.?)?(kern|core)", "fehlende[rn]? (gpu.?)?kern",
+      "f[üu]r teile", "sammler", "sammlung", "spender",
+      "wasserk[üu]hler", "\\bk[üu]hler\\b", "grafikkartenk[üu]hler", "k[üu]hlk[öo]rper", "k[üu]hlerl[üu]fter",
+      "karten ?halter", "\\bhalter(ung)?\\b", "st[üu]tze\\b", "\\bblende\\b", "\\bgeh[äa]use\\b"
     ]
   },
   "keyword_watches": [
@@ -45,10 +50,13 @@
     }
   ],
   "exclude_title_patterns": [
-    "\\blaptop\\b", "notebook", "λ[άa]πτοπ", "\\bpc\\b", "desktop", "υπολογιστ",
+    "\\blaptop\\b", "notebook", "λ[άa]πτοπ", "\\bpc\\b", "desktop(?!\\s*(grafikkarte|gpu|graphics|video|card))", "υπολογιστ",
     "\\btower\\b", "gaming (rig|setup|build)", "\\b(i[3579]|ryzen|core ultra)\\b",
-    "\\bfans?\\b", "\\bcooler\\b", "backplate", "bracket", "water ?block", "\\briser\\b",
+    "^(?!.*\\b(dual|twin|triple|tri|2x|3x|[23])[ -]?fans?\\b).*\\bfans?\\b", "\\breplacement\\b", "\\bcooler\\b", "backplate", "bracket", "water ?block", "\\briser\\b",
     "\\bcable\\b", "box only", "\\bmonitor\\b", "mining rig", "\\bshroud\\b",
+    "heat ?sink", "\\bbezel\\b", "\\bbaffle\\b", "nvlink", "sli ?bridge", "\\b(gpu|card) ?(holder|support)\\b",
+    "anti.?sag", "\\bmxm\\b", "\\bagp\\b", "\\b(without|no) (gpu|card|graphics card)\\b", "gpu not included",
+    "\\b(without|no) (gpu )?(core|die|vram)\\b", "\\bdonor\\b",
     "\\bwtb\\b", "looking for", "ζητ", "\\bwanted\\b"
   ],
   "gpus": [
