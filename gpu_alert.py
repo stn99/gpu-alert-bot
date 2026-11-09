@@ -672,6 +672,32 @@ def collect_shops(jobs, cfg):
     return out, counts
 
 
+def business_drop(lst, gpu, verdict, prev, cfg):
+    """Second buyer: a VAT-registered business that reclaims the VAT on shop invoices. Alert when a shop
+    cuts a recognised card's price by min_drop_pct or more from the first price the bot saw, and the price
+    without VAT fits the business budget. Returns an alert tuple for send_alerts or None."""
+    bcfg = cfg.get("business") or {}
+    if not bcfg.get("enabled") or not gpu or verdict == "skip" or not lst.get("price") or not prev:
+        return None
+    ref = prev.get("first_price") or prev.get("price")
+    if not ref:
+        return None
+    drop = 1 - lst["price"] / ref
+    vat = float(bcfg.get("vat_pct", 19))
+    net = lst["price"] / (1 + vat / 100)
+    if drop * 100 < float(bcfg.get("min_drop_pct", 10)) or net > float(bcfg.get("budget_eur", 600)):
+        return None
+    if prev.get("biz_alerted") and lst["price"] > prev["biz_alerted"] * 0.97:
+        return None   # already alerted for this cut and it has not dropped meaningfully further
+    who = bcfg.get("name") or "the business"
+    head = (f"[BUSINESS PRICE DROP] {gpu['name']} - EUR {net:.0f} without VAT ({lst['price']:.0f} with VAT), "
+            f"down {drop * 100:.0f}% from {ref:.0f} on {lst['site']}")
+    notes = [f"for {who}: invoice in the business name so it can reclaim the {vat:g}% VAT"] + \
+        list(lst.get("extra_notes") or [])
+    text = "\n".join([head, lst["title"], "Notes: " + "; ".join(notes), lst["url"]])
+    return text, lst, dict(gpu, name="Business: " + gpu["name"])
+
+
 # ------------------------------------------------------------------------ matching
 def compile_config(cfg):
     cfg["_exclude"] = [re.compile(p, re.I) for p in cfg.get("exclude_title_patterns", [])]
@@ -944,12 +970,20 @@ def scan(cfg, dry_run=False, list_all=False):
                 kind = "drop"
             if kind:
                 deals.append((format_deal(lst, gpu, notes, kind), lst, gpu))
+        is_shop = watch is None and lst["site"] in SHOPS
+        biz = business_drop(lst, gpu, verdict, prev, cfg) if is_shop else None
+        if biz:
+            deals.append(biz)
         if not dry_run:
             entry = prev or {"first_seen": now, "title": lst["title"][:100], "site": lst["site"]}
+            if is_shop and entry.get("first_price") is None:
+                entry["first_price"] = entry.get("price") or lst["price"]   # reference for price-drop alerts
             entry["price"] = lst["price"]
             entry["last_seen"] = now
             if verdict == "deal":
                 entry["alerted"] = True
+            if biz:
+                entry["biz_alerted"] = lst["price"]
             state[lst["id"]] = entry
     if ran_ebay and not dry_run:
         meta = state.setdefault("_meta", {})

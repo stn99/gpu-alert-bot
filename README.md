@@ -173,3 +173,20 @@ so the 5-minute marketplace scans are not slowed down:
 * needy.shop is not included: its terms forbid scraping, and its agent policy only
   allows automated access through its UCP catalog API with a published agent
   profile.
+
+## Second buyer: a VAT-registered business
+
+The `business` section watches the same shops for a friend's family business that
+needs a card too and can reclaim the 19% VAT on a shop invoice (only legitimate when
+the card really is for the business). Instead of the used-value ceilings it uses
+**shop price cuts**:
+
+* any card from `gpus[]` (same title checks, 12 GB+) whose shop price falls
+  `min_drop_pct` (10%) or more below the first price the bot saw for that product,
+* with the price without VAT (`price / 1.19`) at or under `budget_eur` (600),
+* is sent as `[BUSINESS PRICE DROP]`, showing the price with and without VAT.
+  Each cut alerts once, and again only after a further 3% drop.
+
+The reference price is stored per product in `seen.json` (`first_price`), so cuts
+are measured from when the bot started watching the shops (2026-11-09). Marketplace
+and eBay listings are not checked for the business: private sellers give no VAT invoice.

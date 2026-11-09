@@ -49,6 +49,14 @@
     "custompc": true,
     "computerg": true
   },
+  "business": {
+    "_help": "Second buyer: a friend's VAT-registered family business that reclaims the VAT on shop invoices. For shop listings only (a VAT invoice is needed), any card from gpus[] whose shop price falls min_drop_pct or more below the first price the bot saw, with the price without VAT at or under budget_eur, is alerted as [BUSINESS PRICE DROP]. Each cut alerts once; again only after a further 3% drop. Set enabled to false to stop.",
+    "enabled": true,
+    "name": "the business",
+    "vat_pct": 19,
+    "budget_eur": 600,
+    "min_drop_pct": 10
+  },
   "keyword_watches": [
     {
       "name": "DF64 coffee grinder",
