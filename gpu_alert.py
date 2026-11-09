@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 GPU deal watcher for bazaraki.com and vendora.cy (Cyprus), plus eBay through
-its official Browse API once you have stored developer keys (--setup-ebay).
+its official Browse API once you have stored developer keys (--setup-ebay), plus
+the Cypriot computer shops Armenius, Bionic, Custom PC and ComputerG.
 
 Scans the newest GPU listings on both sites, recognises the card model from the
 title, checks the VRAM requirement and compares the price against a per-model
@@ -24,6 +25,7 @@ Standard library only - no pip installs needed.
 """
 import argparse
 import base64
+import concurrent.futures
 import datetime as dt
 import html
 import json
@@ -69,8 +71,8 @@ def log(msg, path=SCAN_LOG):
         pass
 
 
-def fetch(url, retries=2):
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "en,el;q=0.8"})
+def fetch(url, retries=2, ua=UA):
+    req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept-Language": "en,el;q=0.8"})
     last = None
     for attempt in range(retries + 1):
         try:
@@ -117,8 +119,12 @@ def normalise_title(title):
 
 
 def vram_in_title(norm):
-    """Return list of GB numbers mentioned like '12gb', '16 gb', '12g'."""
-    return [int(n) for n in re.findall(r"\b(\d{1,2})\s*(?:gb|g)\b", norm)]
+    """Return list of GB numbers mentioned like '12gb', '16 gb', '8192 mb', or else '12g'.
+    A bare 'g' is only used when no 'gb' is written: part numbers end in it too
+    (Sapphire 11350-03-20G is an 8GB card)."""
+    sizes = [int(n) for n in re.findall(r"\b(\d{1,2})\s*gb\b", norm)]
+    sizes += [round(int(n) / 1024) for n in re.findall(r"\b(\d{4,5})\s*mb\b", norm)]   # 8192 MB
+    return sizes or [int(n) for n in re.findall(r"\b(\d{1,2})\s*g\b", norm)]
 
 
 # Words naming a GPU maker (matched on the normalised title). A title that names only
@@ -471,6 +477,201 @@ def setup_ebay(cfg):
     print("The scheduled scans will now include eBay automatically.")
 
 
+# --------------------------------------------------------------------- retail shops
+# Cypriot computer shops (new cards, a few refurbished). Each one is read only through
+# pages its robots.txt allows (no search / sort / items-per-page URLs), at its crawl-delay,
+# with a user agent that says what this is. needy.shop is deliberately missing: its terms
+# forbid scraping and its agent policy (needy.shop/agents.md) only allows automated access
+# through its UCP catalog API with a published, identifiable agent profile.
+SHOP_UA = "gpu-alert-bot/1.0 (personal GPU price alert; read-only)"
+ARMENIUS_API = ("https://armenius.com.cy/wp-json/wc/store/v1/products"
+                "?category=gpu-graphics-cards,refurbished-gpu-graphics-cards&per_page=100&page={page}")
+BIONIC_URL = "https://bionic.com.cy/en/products/c/graphics-card?page={page}&per_page=48"
+CUSTOMPC_URL = "https://www.custompc.com.cy/components/graphics-cards/{brand}-graphics-cards/"
+COMPUTERG_URL = "https://www.computerg.shop/shop/category/graphicscards-gpus-118"
+
+
+def _shop_item(site, sid, title, price, url, in_stock, notes):
+    return {"site": site, "id": sid, "title": title, "price": price, "url": url, "in_stock": in_stock,
+            "extra_notes": notes, "when": "", "location": "", "seller": ""}
+
+
+def shop_armenius():
+    """The shop's own WooCommerce Store API (public JSON), 100 cards per request, 5 s apart."""
+    out = []
+    for page in range(1, 11):
+        if page > 1:
+            time.sleep(5)
+        raw = fetch(ARMENIUS_API.format(page=page), ua=SHOP_UA)
+        try:
+            items = json.loads(raw) if raw else []
+        except ValueError:
+            items = []
+        if not isinstance(items, list):
+            break
+        for p in items:
+            pr = p.get("prices") or {}
+            try:
+                scale = 10 ** int(pr.get("currency_minor_unit", 2))
+                price = int(pr["price"]) / scale if pr.get("currency_code", "EUR") == "EUR" else None
+                regular = int(pr.get("regular_price") or 0) / scale
+            except (KeyError, TypeError, ValueError):
+                price, regular = None, 0
+            notes = []
+            if any("refurb" in str(c.get("slug")) for c in p.get("categories") or []):
+                notes.append("refurbished")
+            if price and regular > price:
+                notes.append(f"on sale, was {regular:.0f}")
+            stock = (p.get("stock_availability") or {}).get("text")
+            if stock:
+                notes.append(html.unescape(stock))
+            out.append(_shop_item("armenius", f"am:{p.get('id')}", html.unescape(p.get("name") or ""), price,
+                                  p.get("permalink") or "", bool(p.get("is_in_stock") and p.get("is_purchasable")),
+                                  notes))
+        if len(items) < 100:
+            break
+    return out
+
+
+def shop_bionic():
+    """The product list the category page embeds as JSON (prices include VAT)."""
+    out = []
+    for page in range(1, 6):
+        if page > 1:
+            time.sleep(3)
+        h = fetch(BIONIC_URL.format(page=page), ua=SHOP_UA)
+        m = re.search(r'<script type="application/json" class="js-react-on-rails-component" '
+                      r'data-component-name="App"[^>]*>(.*?)</script>', h, re.S)
+        try:
+            data = json.loads(m.group(1)) if m else {}
+        except ValueError:
+            data = {}
+        for p in data.get("productsList") or []:
+            en = next((t for t in p.get("translations") or [] if t.get("locale") == "en"), {})
+            price = p.get("total_price_value")
+            notes = []
+            if p.get("onSale"):
+                notes.append("on sale")
+            if p.get("clearance"):
+                notes.append("clearance")
+            if isinstance(p.get("totalStock"), int):
+                notes.append(f"{p['totalStock']} in stock")
+            slug = en.get("slug") or ""
+            out.append(_shop_item("bionic", f"bi:{p.get('id')}", en.get("title") or "",
+                                  float(price) if isinstance(price, (int, float)) else None,
+                                  f"https://bionic.com.cy/en/products/{slug}" if slug else "",
+                                  bool(p.get("inStock")), notes))
+        if page >= int((data.get("productParameters") or {}).get("totalPages") or 1):
+            break
+    return out
+
+
+def shop_custompc():
+    """NVIDIA / AMD / Intel category pages, 5 s apart (the parent category also holds accessories)."""
+    out, first = [], True
+    for brand in ("nvidia", "amd", "intel"):
+        page, last = 1, 1
+        while page <= min(last, 30):
+            if not first:
+                time.sleep(5)
+            first = False
+            h = fetch(CUSTOMPC_URL.format(brand=brand) + (f"page-{page}/" if page > 1 else ""), ua=SHOP_UA)
+            last = max([last] + [int(n) for n in re.findall(brand + r'-graphics-cards/page-(\d+)/', h)])
+            for ch in h.split('class="ty-grid-list__item ')[1:]:
+                pid = re.search(r'name="product_data\[(\d+)\]\[product_id\]"', ch)
+                a = re.search(r'href="([^"]+)" class="product-title" title="([^"]*)"', ch)
+                if not pid or not a:
+                    continue
+                # "1,388<sup>60</sup>" = 1388.60 incl. VAT
+                pr = re.search(r'id="sec_discounted_price_\d+" class="ty-price-num">([^<]*)(?:<sup>(\d+)</sup>)?', ch)
+                whole = re.sub(r"\D", "", pr.group(1)) if pr else ""
+                price = float(whole + "." + (pr.group(2) or "0")) if whole else None
+                stock = re.search(r'class="et-grid-stock (et-[a-z-]+)"', ch)
+                qty = re.search(r'<span>(\d+)&nbsp;item', ch)
+                out.append(_shop_item("custompc", f"cp:{pid.group(1)}", html.unescape(a.group(2)), price, a.group(1),
+                                      bool(stock and stock.group(1) == "et-in-stock"),
+                                      [f"{qty.group(1)} in stock"] if qty else []))
+            page += 1
+    return out
+
+
+def shop_computerg():
+    """Category pages, newest first, 10 s apart. Most cards ship from a supplier in some days."""
+    out = []
+    for page in range(1, 41):
+        if page > 1:
+            time.sleep(10)
+        h = fetch(COMPUTERG_URL + (f"/page/{page}" if page > 1 else ""), ua=SHOP_UA)
+        for ch in h.split('<div class="sf-card ')[1:]:
+            a = re.search(r'class="sf-card-name" href="(/shop/[^"]*?-(\d+))">([^<]*)</a>', ch)
+            if not a:
+                continue
+            pr = re.search(r'class="sf-price-now">(.*?)</span>', ch, re.S)
+            digits = re.sub(r"[^\d.]", "", html.unescape(pr.group(1))) if pr else ""   # "1 181.99 €"
+            try:
+                price = float(digits) if digits else None
+            except ValueError:
+                price = None
+            notes = []
+            for rx in (r'class="sf-card-grade[^"]*">(.*?)</span>', r'class="sf-card-ship[^"]*">(.*?)</span>'):
+                m = re.search(rx, ch, re.S)
+                if m:
+                    notes.append(html.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip().capitalize())
+            out.append(_shop_item("computerg", f"cg:{a.group(2)}", html.unescape(a.group(3)).strip(), price,
+                                  "https://www.computerg.shop" + a.group(1), "sf-addform" in ch, notes))
+        shown = re.search(r'<b>\d+</b>\s*(?:[–-]|&ndash;)\s*(\d+)\s*of\s*<b>(\d+)</b>', h)
+        if not shown or int(shown.group(1)) >= int(shown.group(2)):
+            break
+    return out
+
+
+SHOPS = {"armenius": shop_armenius, "bionic": shop_bionic, "custompc": shop_custompc, "computerg": shop_computerg}
+
+
+def shops_due(cfg, force=False):
+    """True when at least one shop is switched on and every_minutes have passed since the last read."""
+    scfg = cfg.get("shops") or {}
+    if not scfg.get("enabled", True) or not any(scfg.get(n, True) for n in SHOPS):
+        return False
+    if force:
+        return True
+    last = (load_json(STATE_PATH, {}) or {}).get("_meta", {}).get("shops_last", 0)
+    return time.time() - float(last or 0) >= 60 * float(scfg.get("every_minutes", 30)) - 30
+
+
+def start_shops(cfg):
+    """Read every enabled shop in its own thread (each keeps its own pace), while the rest of the scan runs."""
+    scfg = cfg.get("shops") or {}
+    names = [n for n in SHOPS if scfg.get(n, True)]
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(names))
+    jobs = {n: pool.submit(SHOPS[n]) for n in names}
+    pool.shutdown(wait=False)
+    return jobs
+
+
+def collect_shops(jobs, cfg):
+    """-> (listings you can order now, {shop: cards read in total})"""
+    scfg = cfg.get("shops") or {}
+    factor = float(scfg.get("ceiling_factor", 1.0) or 1.0)
+    out, counts, seen = [], {}, set()
+    for name, job in jobs.items():
+        try:
+            items = job.result(timeout=900)
+        except Exception as e:  # noqa: BLE001
+            log(f"SHOP FAILED {name}: {e!r}")
+            items = []
+        counts[name] = len(items)
+        for lst in items:
+            if not lst.pop("in_stock") or lst["id"] in seen:
+                continue
+            seen.add(lst["id"])
+            lst["ceiling_factor"] = factor
+            # a "card" at a shop under scam_ratio x its used value is an accessory or another product
+            lst["skip_if_suspiciously_cheap"] = True
+            out.append(lst)
+    return out, counts
+
+
 # ------------------------------------------------------------------------ matching
 def compile_config(cfg):
     cfg["_exclude"] = [re.compile(p, re.I) for p in cfg.get("exclude_title_patterns", [])]
@@ -684,6 +885,8 @@ def save_json(path, data):
 # --------------------------------------------------------------------------- scan
 def scan(cfg, dry_run=False, list_all=False):
     src = cfg.get("sources", {})
+    # the shops are read in background threads while the marketplaces are scraped
+    shop_jobs = start_shops(cfg) if shops_due(cfg, force=dry_run or list_all) else None
     listings = scrape_bazaraki(src.get("bazaraki_pages", 2)) + \
         scrape_vendora(src.get("vendora_pages", 2), src.get("vendora_searches", ["rtx", "radeon"]))
     # keyword watches: site-wide searches, classified by their own pattern
@@ -710,6 +913,11 @@ def scan(cfg, dry_run=False, list_all=False):
                 ne += 1
             else:
                 watched.append((lst, w))
+    shop_counts, ns = {}, 0
+    if shop_jobs is not None:
+        found, shop_counts = collect_shops(shop_jobs, cfg)
+        listings += found
+        ns = len(found)
 
     state = load_json(STATE_PATH, {})
     now = dt.datetime.now().isoformat(timespec="seconds")
@@ -750,6 +958,8 @@ def scan(cfg, dry_run=False, list_all=False):
             notify_telegram(cfg, f"GPU Alert Bot warning: the eBay search failed ({html.escape(ebay_err[:200])}). "
                                  "Check the keys with: python gpu_alert.py --setup-ebay")
             meta["ebay_warned"] = now
+    if shop_jobs is not None and not dry_run:
+        state.setdefault("_meta", {})["shops_last"] = time.time()
     if not dry_run:
         cutoff = (dt.datetime.now() - dt.timedelta(days=90)).isoformat()
         state = {k: v for k, v in state.items() if v.get("last_seen", now) >= cutoff}
@@ -758,16 +968,20 @@ def scan(cfg, dry_run=False, list_all=False):
     nb = sum(1 for l in listings if l["site"] == "bazaraki")
     nv = sum(1 for l in listings if l["site"] == "vendora")
     ebay_txt = f", {ne} ebay" if ran_ebay else ""
-    log(f"scanned {len(listings)} GPU listings ({nb} bazaraki, {nv} vendora{ebay_txt}) + {len(watched)} keyword-search results "
-        f"-> {len(deals)} new deal(s)")
-    if (nb == 0 or nv == 0) and not dry_run:
+    shop_txt = f", {ns} in stock at shops" if shop_jobs is not None else ""
+    log(f"scanned {len(listings)} GPU listings ({nb} bazaraki, {nv} vendora{ebay_txt}{shop_txt}) + {len(watched)} "
+        f"keyword-search results -> {len(deals)} new deal(s)")
+    if shop_counts:
+        log("shops (cards read): " + ", ".join(f"{k} {v}" for k, v in shop_counts.items()))
+    empty = [s for s, n in [("bazaraki", nb), ("vendora", nv)] + list(shop_counts.items()) if n == 0]
+    if empty and not dry_run:
         # a site returned nothing: blocked, down or changed layout. Warn on Telegram at most once a day.
         meta = state.setdefault("_meta", {})
         last = meta.get("empty_warned", "")
         if last < (dt.datetime.now() - dt.timedelta(hours=24)).isoformat():
             where = os.environ.get("GITHUB_ACTIONS") and "GitHub cloud" or "PC"
             notify_telegram(cfg, f"GPU Alert Bot warning ({where}): "
-                                 f"{'bazaraki' if nb == 0 else 'vendora'} returned 0 listings. "
+                                 f"{', '.join(empty)} returned 0 listings. "
                                  "The site may be blocking this runner or changed its page layout.")
             meta["empty_warned"] = now
             save_json(STATE_PATH, state)

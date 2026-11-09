@@ -1,4 +1,4 @@
-# GPU Alert Bot (bazaraki.com + vendora.cy + eBay)
+# GPU Alert Bot (bazaraki.com + vendora.cy + eBay + Cypriot shops)
 
 Watches the newest GPU listings on both Cypriot marketplaces and alerts you when a
 card with **12 GB VRAM or more** shows up at or below what it is worth second-hand
@@ -123,6 +123,9 @@ How eBay listings are judged (`ebay` section of `config.json`):
 
 * Only Buy It Now listings that ship to Cyprus (`deliver_to`), newest first, on the
   `marketplaces` you list (default eBay.de). Auctions and "for parts" items are skipped.
+  One marketplace is enough: with delivery to Cyprus the API searches the listings of
+  every eBay site (tested 2026-11-09: all 11 European marketplaces returned the same
+  items and totals). The marketplace only sets the currency and the link's domain.
 * The price compared with the ceiling is item + shipping to Cyprus. For sellers
   outside the EU (UK, US, China...) `non_eu_import_vat_pct` (19) is added on top.
 * On eBay a "card" under `scam_ratio` x its ceiling (40%) is skipped instead of alerted
@@ -142,3 +145,31 @@ How eBay listings are judged (`ebay` section of `config.json`):
 * A keyword watch can search eBay too by adding `"ebay": true` (optionally with its own
   `"ebay_searches"`). The DF64 watch has it off, because at "any price" every new
   DF64 sold by a shop would alert.
+
+## Cypriot computer shops
+
+The `shops` section of `config.json` adds the new (and a few refurbished) cards of
+four Cypriot shops. They are read every `every_minutes` (30) in background threads,
+so the 5-minute marketplace scans are not slowed down:
+
+| Shop | How it is read |
+|---|---|
+| Armenius | the shop's public WooCommerce Store API (JSON), main + refurbished GPU categories, 5 s between requests |
+| Bionic | the product data its graphics-card page embeds as JSON |
+| Custom PC | NVIDIA / AMD / Intel graphics-card category pages, 5 s apart (its robots.txt crawl-delay) |
+| ComputerG | graphics-card category pages, newest first, 10 s apart (its robots.txt crawl-delay) |
+
+* Only pages each shop's robots.txt allows are used (no search, sorting or
+  items-per-page URLs), and the requests say they come from `gpu-alert-bot`.
+* Only cards you can order now count. ComputerG drop-ships most cards; the alert
+  shows its delivery time ("Ships in 7-10 days").
+* Prices are shop prices including VAT, picked up in store or with the shop's own
+  delivery, compared with the same `gpus[].max_eur` ceilings. In Nov 2026 Cypriot shop
+  prices are far above used values (RTX 5060 Ti 16GB 930-995 EUR, RX 9070 XT
+  1,080-1,210 EUR), so shop alerts will only come with real sales (Black Friday).
+  Raise `shops.ceiling_factor` if a new card with warranty is worth more to you.
+* A shop that returns 0 cards triggers the same once-a-day Telegram warning as the
+  marketplaces (layout change or blocked).
+* needy.shop is not included: its terms forbid scraping, and its agent policy only
+  allows automated access through its UCP catalog API with a published agent
+  profile.

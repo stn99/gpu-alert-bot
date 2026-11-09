@@ -39,6 +39,16 @@
       "karten ?halter", "\\bhalter(ung)?\\b", "st[üu]tze\\b", "\\bblende\\b", "\\bgeh[äa]use\\b"
     ]
   },
+  "shops": {
+    "_help": "Cypriot computer shops (new cards, a few refurbished). Read every every_minutes in the background, at each shop's robots.txt crawl-delay, with an honest bot user agent. Only cards you can order now are compared with the ceilings. ceiling_factor multiplies gpus[].max_eur for shops only: 1.0 keeps your rule of never paying more than the used value; a new card with warranty may be worth e.g. 1.15. Set a shop to false to stop reading it. needy.shop is not supported (its terms forbid scraping).",
+    "enabled": true,
+    "every_minutes": 30,
+    "ceiling_factor": 1.0,
+    "armenius": true,
+    "bionic": true,
+    "custompc": true,
+    "computerg": true
+  },
   "keyword_watches": [
     {
       "name": "DF64 coffee grinder",
@@ -92,7 +102,7 @@
     {"name": "RX 7900 XT",         "pattern": "\\b7900\\s*xt\\b",                        "vram_gb": 20, "max_eur": 540},
     {"name": "RX 7900 XTX",        "pattern": "\\b7900\\s*xtx\\b",                       "vram_gb": 24, "max_eur": 600},
     {"name": "RX 9060 XT 16GB",    "pattern": "\\b9060\\s*xt\\b",                        "vram_gb": 16, "max_eur": 350, "ambiguous_vram": true},
-    {"name": "RX 9070",            "pattern": "\\b9070\\b(?!\\s*xt)",                    "vram_gb": 16, "max_eur": 540},
+    {"name": "RX 9070",            "pattern": "\\b9070\\b(?!\\s*(xt|gre))",              "vram_gb": 16, "max_eur": 540},
     {"name": "RX 9070 XT",         "pattern": "\\b9070\\s*xt\\b",                        "vram_gb": 16, "max_eur": 600},
 
     {"name": "Arc A770 16GB",      "pattern": "\\ba770\\b",                              "vram_gb": 16, "max_eur": 200, "ambiguous_vram": true},
