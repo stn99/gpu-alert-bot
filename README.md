@@ -42,6 +42,11 @@ new listings (or price drops) trigger alerts.
 * `gpus[].max_eur` - what that model is worth to you used. The shipped numbers are
   Nov-2026 estimates taken from eBay sold-price trackers minus roughly 10 percent;
   check them against `--list` output every few weeks because the used market moves.
+  Keep the real value even when it is above `budget_eur`: the ceiling stays at the
+  budget, and the value is what "suspiciously cheap" is measured against. The cards
+  above 600 (3090, 4070 Ti Super and up, 5070 Ti and up, 7900 XTX, 9070 XT) are set
+  about 10 percent under the cheapest real used offers on eBay delivered to Cyprus
+  on 2026-11-12.
 * `ambiguous_vram: true` marks models that also exist with less VRAM (3060 8/12 GB,
   3080 10/12 GB, 5060 Ti 8/16 GB, 9060 XT 8/16 GB, A770 8/16 GB). If the title
   names a smaller size the ad is skipped; if it names no size you get the alert
@@ -50,7 +55,9 @@ new listings (or price drops) trigger alerts.
 * `exclude_title_patterns` - regexes that drop whole PCs, laptops, fans,
   wanted-ads etc. Add your own.
 * `great_deal_ratio` / `scam_ratio` - below 80 percent of the ceiling the alert is
-  tagged GREAT DEAL; below 40 percent it is tagged as a likely scam.
+  tagged GREAT DEAL; below 40 percent of the card's used value (`max_eur`, not capped
+  by the budget) it is tagged as a likely scam. An RTX 4090 is worth about 2,700, so
+  any 4090 inside a 600 budget is flagged.
 
 ## Notes
 
@@ -128,7 +135,7 @@ How eBay listings are judged (`ebay` section of `config.json`):
   items and totals). The marketplace only sets the currency and the link's domain.
 * The price compared with the ceiling is item + shipping to Cyprus. For sellers
   outside the EU (UK, US, China...) `non_eu_import_vat_pct` (19) is added on top.
-* On eBay a "card" under `scam_ratio` x its ceiling (40%) is skipped instead of alerted
+* On eBay a "card" under `scam_ratio` x its used value (40% of `max_eur`) is skipped instead of alerted
   (`skip_suspiciously_cheap`): in practice those are coolers, empty boxes, "ohne Core &
   VRAM" donor boards or fakes. Set it to `false` to get them with a warning instead.
   German part words (Kühler, Halter, ohne Core, für Teile...) are in the eBay

@@ -769,15 +769,18 @@ def classify(listing, cfg):
     if price is None or price <= 0:
         return best, "skip", ["no price"]
     # ceiling_factor > 1 lets eBay (which has buyer protection) go a bit above the local ceilings
-    ceiling = min(float(cfg["budget_eur"]), float(best["max_eur"]) * float(listing.get("ceiling_factor", 1.0)))
+    worth = float(best["max_eur"]) * float(listing.get("ceiling_factor", 1.0))   # may be above the budget
+    ceiling = min(float(cfg["budget_eur"]), worth)
     listing["ceiling"] = ceiling
     if price > ceiling:
         return best, "above", [f"{price:.0f} > ceiling {ceiling:.0f}"]
-    if price < ceiling * cfg.get("scam_ratio", 0.4):
+    # "too cheap" is measured against what the card is worth, not against the budget cap:
+    # a 4090 for 266 is a tenth of its value, not 44% of a 600 budget
+    if price < worth * cfg.get("scam_ratio", 0.4):
         if listing.get("skip_if_suspiciously_cheap"):
             # on eBay a "card" this cheap is a cooler, a box, a photo or a fake, not a deal
-            return best, "skip", [f"{price:.0f} is under {cfg.get('scam_ratio', 0.4):g} x ceiling - "
-                                  "a part, box or fake"]
+            return best, "skip", [f"{price:.0f} is under {cfg.get('scam_ratio', 0.4):g} x its used value "
+                                  f"({worth:.0f}) - a part, box or fake"]
         notes.append("SUSPICIOUSLY CHEAP - likely scam, never pay in advance")
     elif price <= ceiling * cfg.get("great_deal_ratio", 0.8):
         notes.append("GREAT DEAL")
