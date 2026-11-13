@@ -2,7 +2,9 @@
 
 Watches the newest GPU listings on both Cypriot marketplaces and alerts you when a
 card with **12 GB VRAM or more** shows up at or below what it is worth second-hand
-(and never above your **600 EUR** budget).
+(and never above your **600 EUR** budget). It also watches **complete desktop PCs**
+and alerts when one is clearly cheaper than its parts bought separately (see
+"Ready PCs" below).
 
 ## Files
 
@@ -63,8 +65,10 @@ new listings (or price drops) trigger alerts.
 
 * Shops on bazaraki re-post the same stock daily under new ad IDs; those are
   mostly new cards above your ceilings, so they rarely alert.
-* Only titles are parsed. A seller who writes just "graphics card" will be missed.
-* Keep `poll_minutes` at 5 or more; the bot fetches about 7 pages per scan.
+* For graphics cards only titles are parsed. A seller who writes just "graphics card"
+  will be missed. (For ready PCs the description is read too, see below.)
+* Keep `poll_minutes` at 5 or more; the bot fetches about 20 pages per scan, plus 4
+  for ready PCs every 10 minutes.
 
 ## Running in the cloud (PC can be off)
 
@@ -180,6 +184,65 @@ so the 5-minute marketplace scans are not slowed down:
 * needy.shop is not included: its terms forbid scraping, and its agent policy only
   allows automated access through its UCP catalog API with a published agent
   profile.
+
+## Ready PCs (complete desktops)
+
+With RAM and graphics cards as expensive as they are, a complete PC is often cheaper
+than its parts. The `pcs` section of `config.json` watches for that:
+
+1. The bot reads which **graphics card, processor and RAM** an advert names.
+2. Each part is priced at what it costs **used when bought on its own** (tables in
+   `pcs`: `gpu_eur`, `other_gpus`, `cpu_eur`, `ram_eur_per_gb`), plus `rest_eur` for the
+   board, PSU, case and SSD.
+3. You get an alert when the PC costs at most `max_price_ratio` x that sum. It is set to
+   1.05: **anything up to 5% above the price of its parts bought one by one**. The alert
+   says how the price compares ("14% cheaper as a ready PC", "4% dearer than its parts,
+   but ready built"), and GREAT DEAL marks PCs at least 16% cheaper than their parts.
+   Stricter: 1.0 = no dearer than the parts, 0.85 = only PCs at least 15% cheaper.
+   There is no price cap (`budget_eur: null`).
+
+The alert shows the sum and every part it counted, for example
+`RTX 3060 12GB 350 + i5-11600 95 + 16GB DDR4 67 + board, PSU, case, SSD 170`.
+
+Where it looks:
+
+| Source | How |
+|---|---|
+| bazaraki, vendora | the newest adverts of their desktop-PC sections, every `every_minutes` (10) |
+| the graphics-card feeds | whole PCs that turn up there are now valued instead of ignored |
+| Armenius, Bionic, Custom PC, ComputerG | their complete-PC categories, every `shops_every_minutes` (180), same polite pace as the cards |
+
+Which PCs count:
+
+* a PC with a card from your 12 GB+ list (`gpus[]`), or
+* a strong base to put your own card into: a processor worth `min_cpu_eur` (60, a
+  Ryzen 5 3600 or better) or more with at least `min_ram_gb` (16) of RAM. A smaller card
+  in it still adds its value.
+* Laptops, all-in-ones, Macs, mini and office PCs, servers and part bundles are left
+  out (`pcs.exclude_title_patterns`). Brand-name boxes (HP, Dell, Lenovo, Acer...)
+  get only `rest_eur.oem` for the rest: their boards, PSUs and cases are proprietary.
+
+How it stays careful:
+
+* A part the advert does not name counts as **0**, so a vague advert never looks cheap.
+* If the VRAM is not stated, the cheaper variant is assumed (an "RTX 3060" counts as
+  the 8 GB one). Intel 12th-14th gen RAM counts as DDR4 unless the advert says DDR5;
+  the alert tells you how much more the parts are worth if it is DDR5.
+* A bare number is only a graphics card after a word like RTX/GTX/RX: "Dell 3060" is
+  an OptiPlex.
+* On bazaraki many sellers write just "Gaming PC". For adverts above
+  `details_min_price` whose title leaves parts open, the seller's description is read
+  once (at most `detail_fetches_per_scan` adverts per scan) and remembered in
+  `seen.json`. The alert says when parts came from the description.
+* Under `scam_ratio` x the parts sum a shop item is skipped (not a complete PC) and a
+  marketplace advert is tagged SUSPICIOUSLY CHEAP.
+
+The part prices are **market prices** (used Buy It Now offers on eBay Germany, lower
+quartile, measured 2026-11-12), not the stricter `gpus[].max_eur` ceilings. Measured
+that day: DDR5 about 13.5 EUR/GB (32 GB = 430), DDR4 about 4.2 EUR/GB. Refresh the
+tables every few weeks. To see more PCs raise `max_price_ratio` or lower `min_cpu_eur`;
+a PC seen earlier that qualifies only after the change alerts once.
+`python gpu_alert.py --list` shows every valued PC with its ceiling.
 
 ## Second buyer: a VAT-registered business
 

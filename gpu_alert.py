@@ -4,6 +4,9 @@ GPU deal watcher for bazaraki.com and vendora.cy (Cyprus), plus eBay through
 its official Browse API once you have stored developer keys (--setup-ebay), plus
 the Cypriot computer shops Armenius, Bionic, Custom PC and ComputerG.
 
+It also watches complete desktop PCs on the marketplaces and in the shops (config
+"pcs") and alerts when one costs clearly less than its parts bought separately.
+
 Scans the newest GPU listings on both sites, recognises the card model from the
 title, checks the VRAM requirement and compares the price against a per-model
 ceiling (never above your overall budget).  New matches are pushed as a Windows
@@ -487,8 +490,16 @@ SHOP_UA = "gpu-alert-bot/1.0 (personal GPU price alert; read-only)"
 ARMENIUS_API = ("https://armenius.com.cy/wp-json/wc/store/v1/products"
                 "?category=gpu-graphics-cards,refurbished-gpu-graphics-cards&per_page=100&page={page}")
 BIONIC_URL = "https://bionic.com.cy/en/products/c/graphics-card?page={page}&per_page=48"
-CUSTOMPC_URL = "https://www.custompc.com.cy/components/graphics-cards/{brand}-graphics-cards/"
+CUSTOMPC_BASE = "https://www.custompc.com.cy/"
+CUSTOMPC_GPU_PATHS = [f"components/graphics-cards/{brand}-graphics-cards/" for brand in ("nvidia", "amd", "intel")]
 COMPUTERG_URL = "https://www.computerg.shop/shop/category/graphicscards-gpus-118"
+# the same shops' complete desktop PCs (config "pcs"), read with the same parsers
+ARMENIUS_PC_API = ("https://armenius.com.cy/wp-json/wc/store/v1/products"   # 50 a page: 100 PCs time out
+                   "?category=desktop-pc,custom-pc,refurbished-desktop-pc&per_page=50&page={page}")
+BIONIC_PC_URL = "https://bionic.com.cy/en/products/c/computers?page={page}&per_page=48"
+CUSTOMPC_PC_PATHS = ["pc-systems/gaming-series/", "pc-systems/creator-series/", "pc-systems/exclusive-series/",
+                     "pc-systems/next-day-desktops/"]
+COMPUTERG_PC_URL = "https://www.computerg.shop/shop/category/pcs-workstations-110"
 
 
 def _shop_item(site, sid, title, price, url, in_stock, notes):
@@ -496,13 +507,13 @@ def _shop_item(site, sid, title, price, url, in_stock, notes):
             "extra_notes": notes, "when": "", "location": "", "seller": ""}
 
 
-def shop_armenius():
+def shop_armenius(api=ARMENIUS_API, per_page=100):
     """The shop's own WooCommerce Store API (public JSON), 100 cards per request, 5 s apart."""
     out = []
-    for page in range(1, 11):
+    for page in range(1, 1000 // per_page + 1):   # at most 1,000 products
         if page > 1:
             time.sleep(5)
-        raw = fetch(ARMENIUS_API.format(page=page), ua=SHOP_UA)
+        raw = fetch(api.format(page=page), ua=SHOP_UA)
         try:
             items = json.loads(raw) if raw else []
         except ValueError:
@@ -528,18 +539,18 @@ def shop_armenius():
             out.append(_shop_item("armenius", f"am:{p.get('id')}", html.unescape(p.get("name") or ""), price,
                                   p.get("permalink") or "", bool(p.get("is_in_stock") and p.get("is_purchasable")),
                                   notes))
-        if len(items) < 100:
+        if len(items) < per_page:
             break
     return out
 
 
-def shop_bionic():
+def shop_bionic(url=BIONIC_URL):
     """The product list the category page embeds as JSON (prices include VAT)."""
     out = []
     for page in range(1, 6):
         if page > 1:
             time.sleep(3)
-        h = fetch(BIONIC_URL.format(page=page), ua=SHOP_UA)
+        h = fetch(url.format(page=page), ua=SHOP_UA)
         m = re.search(r'<script type="application/json" class="js-react-on-rails-component" '
                       r'data-component-name="App"[^>]*>(.*?)</script>', h, re.S)
         try:
@@ -566,17 +577,18 @@ def shop_bionic():
     return out
 
 
-def shop_custompc():
+def shop_custompc(paths=None):
     """NVIDIA / AMD / Intel category pages, 5 s apart (the parent category also holds accessories)."""
     out, first = [], True
-    for brand in ("nvidia", "amd", "intel"):
+    for path in paths or CUSTOMPC_GPU_PATHS:
         page, last = 1, 1
+        tail = re.escape(path.rstrip("/").rsplit("/", 1)[-1])
         while page <= min(last, 30):
             if not first:
                 time.sleep(5)
             first = False
-            h = fetch(CUSTOMPC_URL.format(brand=brand) + (f"page-{page}/" if page > 1 else ""), ua=SHOP_UA)
-            last = max([last] + [int(n) for n in re.findall(brand + r'-graphics-cards/page-(\d+)/', h)])
+            h = fetch(CUSTOMPC_BASE + path + (f"page-{page}/" if page > 1 else ""), ua=SHOP_UA)
+            last = max([last] + [int(n) for n in re.findall(tail + r'/page-(\d+)/', h)])
             for ch in h.split('class="ty-grid-list__item ')[1:]:
                 pid = re.search(r'name="product_data\[(\d+)\]\[product_id\]"', ch)
                 a = re.search(r'href="([^"]+)" class="product-title" title="([^"]*)"', ch)
@@ -595,13 +607,13 @@ def shop_custompc():
     return out
 
 
-def shop_computerg():
+def shop_computerg(url=COMPUTERG_URL, pages=40):
     """Category pages, newest first, 10 s apart. Most cards ship from a supplier in some days."""
     out = []
-    for page in range(1, 41):
+    for page in range(1, pages + 1):
         if page > 1:
             time.sleep(10)
-        h = fetch(COMPUTERG_URL + (f"/page/{page}" if page > 1 else ""), ua=SHOP_UA)
+        h = fetch(url + (f"/page/{page}" if page > 1 else ""), ua=SHOP_UA)
         for ch in h.split('<div class="sf-card ')[1:]:
             a = re.search(r'class="sf-card-name" href="(/shop/[^"]*?-(\d+))">([^<]*)</a>', ch)
             if not a:
@@ -626,6 +638,25 @@ def shop_computerg():
 
 
 SHOPS = {"armenius": shop_armenius, "bionic": shop_bionic, "custompc": shop_custompc, "computerg": shop_computerg}
+SHOP_PCS = {"armenius": lambda: shop_armenius(ARMENIUS_PC_API, 50), "bionic": lambda: shop_bionic(BIONIC_PC_URL),
+            "custompc": lambda: shop_custompc(CUSTOMPC_PC_PATHS),
+            "computerg": lambda: shop_computerg(COMPUTERG_PC_URL, pages=15)}
+
+
+def _shop_job(name, with_pcs):
+    """One shop, one thread: its graphics cards, then (when due) its complete PCs, at the shop's own pace."""
+    items = SHOPS[name]()
+    if with_pcs:
+        time.sleep(10)
+        try:
+            pcs = SHOP_PCS[name]()
+        except Exception as e:  # noqa: BLE001
+            log(f"SHOP PCS FAILED {name}: {e!r}")
+            pcs = []
+        for p in pcs:
+            p["kind"] = "pc"
+        items = items + pcs
+    return items
 
 
 def shops_due(cfg, force=False):
@@ -639,28 +670,29 @@ def shops_due(cfg, force=False):
     return time.time() - float(last or 0) >= 60 * float(scfg.get("every_minutes", 30)) - 30
 
 
-def start_shops(cfg):
+def start_shops(cfg, with_pcs=False):
     """Read every enabled shop in its own thread (each keeps its own pace), while the rest of the scan runs."""
     scfg = cfg.get("shops") or {}
     names = [n for n in SHOPS if scfg.get(n, True)]
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(names))
-    jobs = {n: pool.submit(SHOPS[n]) for n in names}
+    jobs = {n: pool.submit(_shop_job, n, with_pcs) for n in names}
     pool.shutdown(wait=False)
     return jobs
 
 
 def collect_shops(jobs, cfg):
-    """-> (listings you can order now, {shop: cards read in total})"""
+    """-> (listings you can order now, {shop: cards read in total}, {shop: complete PCs read})"""
     scfg = cfg.get("shops") or {}
     factor = float(scfg.get("ceiling_factor", 1.0) or 1.0)
-    out, counts, seen = [], {}, set()
+    out, counts, pc_counts, seen = [], {}, {}, set()
     for name, job in jobs.items():
         try:
-            items = job.result(timeout=900)
+            items = job.result(timeout=1500)
         except Exception as e:  # noqa: BLE001
             log(f"SHOP FAILED {name}: {e!r}")
             items = []
-        counts[name] = len(items)
+        pc_counts[name] = sum(1 for lst in items if lst.get("kind") == "pc")
+        counts[name] = len(items) - pc_counts[name]
         for lst in items:
             if not lst.pop("in_stock") or lst["id"] in seen:
                 continue
@@ -669,7 +701,7 @@ def collect_shops(jobs, cfg):
             # a "card" at a shop under scam_ratio x its used value is an accessory or another product
             lst["skip_if_suspiciously_cheap"] = True
             out.append(lst)
-    return out, counts
+    return out, counts, pc_counts
 
 
 def business_drop(lst, gpu, verdict, prev, cfg):
@@ -698,10 +730,311 @@ def business_drop(lst, gpu, verdict, prev, cfg):
     return text, lst, dict(gpu, name="Business: " + gpu["name"])
 
 
+# ----------------------------------------------------------------------- ready PCs
+# Complete desktop PCs (config "pcs"). The parts an advert names (graphics card, processor,
+# RAM) are priced at what they cost used when bought one by one, plus a flat amount for the
+# board, PSU, case and SSD. The PC is a deal when it is clearly cheaper than that sum.
+BAZARAKI_PC_URL = "https://www.bazaraki.com/computers-and-games/desktops-and-pcs/?ordering=newest&page={page}"
+VENDORA_PC_URL = "https://vendora.cy/browse/2vdx1l/desktops.html?sort=recent&page={page}"
+
+PC_WORDS = re.compile(r"\bpcs?\b|desktop|\btower\b|computer|υπολογιστ|workstation|gaming (rig|setup|build|system)", re.I)
+# a bare model number only counts as a graphics card right after one of these words:
+# "Dell 3060 micro pc" is an OptiPlex and "1920 x 1080" a resolution
+PC_GPU_PREFIX = re.compile(r"(?:rtx|gtx|geforce|nvidia|rx|radeon|arc|gpu|vga|graphics)\s*$")
+PC_INTEL = re.compile(r"\bi([3579])\s*(\d{4,5})([a-z]{0,2})\b")
+PC_ULTRA = re.compile(r"\bultra\s*([3579])\s*(\d{3})([a-z]{0,2})\b")
+PC_RYZEN = re.compile(r"\b(?:ryzen\s*([3579])|r([3579]))\s*(?:pro\s*)?(\d{4})\s*(x3d|xt|x|ge|g|f|u|hs|hx|h)?\b")
+PC_RYZEN_BARE = re.compile(r"(?<!rx )\b([1-9]\d{3})(x3d|x)\b")
+PC_MOBILE_SUFFIX = {"h", "hx", "hk", "hs", "hq", "u", "y", "p", "m", "mq", "qm", "v"}
+PC_RAM_SIZES = {4, 6, 8, 12, 16, 20, 24, 32, 48, 64, 96}
+PC_NOT_RAM = r"(?!\s*(?:ssd|hdd|nvme|m\.?2|sata|storage|emmc|usb|vram|gddr|σκληρ|δ[ίι]σκ))"
+PC_REST_LABEL = "board, PSU, case, SSD"
+
+
+def pcs_due(cfg, key="pcs_last", every="every_minutes", default=10, force=False):
+    """True when the ready-PC search is switched on and its interval has passed."""
+    pcfg = cfg.get("pcs") or {}
+    if not pcfg.get("enabled"):
+        return False
+    if force:
+        return True
+    last = (load_json(STATE_PATH, {}) or {}).get("_meta", {}).get(key, 0)
+    return time.time() - float(last or 0) >= 60 * float(pcfg.get(every, default)) - 30
+
+
+def scrape_pcs(cfg):
+    """Newest adverts of the desktop-PC sections of bazaraki and vendora."""
+    pcfg = cfg.get("pcs") or {}
+    out = scrape_bazaraki_urls([BAZARAKI_PC_URL.format(page=p)
+                                for p in range(1, int(pcfg.get("bazaraki_pages", 2)) + 1)])
+    out += scrape_vendora_urls([VENDORA_PC_URL.format(page=p)
+                                for p in range(1, int(pcfg.get("vendora_pages", 2)) + 1)])
+    for lst in out:
+        lst["kind"] = "pc"
+    return out
+
+
+def bazaraki_description(url):
+    """The seller's own text of one bazaraki advert: the specs are often only written there."""
+    h = fetch(url, retries=0)
+    # the advert's own text sits right before its "askwire" field (other "description"s are page texts)
+    marker = '\\"description\\":\\"'
+    end = h.find('\\",\\"askwire\\"')
+    start = h.rfind(marker, 0, end) if end > 0 else -1
+    text = h[start + len(marker):end] if start >= 0 else ""
+    for _ in range(2):   # the page carries it as JSON inside a JavaScript string
+        try:
+            text = json.loads('"' + text + '"')
+        except ValueError:
+            break
+    if not text:
+        m = re.search(r'<meta name="description" content="([^"]*)"', h)
+        text = m.group(1) if m else ""
+    text = re.sub(r"<[^>]+>|\\[nrt]", " ", html.unescape(text))
+    return re.sub(r"\s+", " ", text).strip()[:1500]
+
+
+def pc_find_gpu(norm, cfg):
+    """The graphics card an advert names -> (name, EUR, note or None, text without the card), or None."""
+    pcfg = cfg["pcs"]
+    found = []
+    for g in cfg["gpus"] + pcfg.get("other_gpus", []):
+        for m in g["_re"].finditer(norm):
+            if not re.search(r"[a-z]", m.group(0)) and not PC_GPU_PREFIX.search(norm[:m.start()]):
+                continue
+            found.append((m.end() - m.start(), g, m))
+    if not found:
+        return None
+    longest = max(f[0] for f in found)
+    first = min(f[2].start() for f in found if f[0] == longest)
+    cands = [f for f in found if f[0] == longest and f[2].start() == first]
+    m = cands[0][2]
+    after = re.match(r"\s*(\d{1,2})\s*gb?\b(?!\s*(?:of\s*)?(?:ddr|ram|memory|μν))", norm[m.end():])
+    if after and int(after.group(1)) > max(c[1]["vram_gb"] for c in cands):
+        after = None   # more than this card can have: that number is the PC's RAM
+    stated = int(after.group(1)) if after else None
+
+    def eur(g):
+        return float(pcfg.get("gpu_eur", {}).get(g["name"], g.get("eur", g.get("max_eur", 0))))
+
+    note = None
+    if stated is not None and any(c[1]["vram_gb"] == stated for c in cands):
+        gpu = next(c[1] for c in cands if c[1]["vram_gb"] == stated)
+    else:
+        gpu = min((c[1] for c in cands), key=eur)   # the cheaper variant when the advert does not say
+        if len(cands) > 1 or gpu.get("ambiguous_vram"):
+            if gpu.get("ambiguous_vram"):   # the big variant is the only one known: do not count on it
+                return (gpu["name"] + "?", 0.0, f"VRAM not stated - could be the small {gpu['name'].rsplit(' ', 1)[0]}",
+                        norm[:m.start()] + " " + norm[m.end():])
+            note = f"VRAM not stated - {gpu['name']} assumed"
+    end = m.end() + (after.end() if after else 0)
+    return gpu["name"], eur(gpu), note, norm[:m.start()] + " " + norm[end:]
+
+
+def pc_find_cpu(norm, cfg):
+    """The processor an advert names -> dict(label, key, eur, era, ram, mobile), or None.
+    key = family used for pricing: i5-12 (Core i5, 12th gen), r7-5 (Ryzen 7 5000), x3d-7, u7-2 (Core Ultra 7 200)."""
+    prices = cfg["pcs"].get("cpu_eur", {})
+    m = PC_ULTRA.search(norm)
+    if m:
+        tier, num, suf = m.group(1), m.group(2), m.group(3)
+        mobile = num[0] != "2" or suf in PC_MOBILE_SUFFIX
+        key = f"u{tier}-{num[0]}"
+        return {"label": f"Core Ultra {tier} {num}{suf.upper()}", "key": key, "eur": float(prices.get(key, 0)),
+                "era": "top", "ram": "ddr5", "mobile": mobile}
+    m = PC_INTEL.search(norm)
+    if m:
+        tier, num, suf = m.group(1), int(m.group(2)), m.group(3)
+        gen = num // 1000
+        mobile = suf in PC_MOBILE_SUFFIX
+        # 4-digit numbers starting with 1 are laptop chips (i5-1235U); without a suffix it is no CPU at all
+        if 2 <= gen <= 14 or (gen == 1 and mobile):
+            key = f"i{tier}-{gen}"
+            era, ram = ("old", "ddr3") if gen <= 5 else ("old", "ddr4") if gen <= 7 else \
+                ("mid", "ddr4") if gen <= 11 else ("new", "ddr4")
+            return {"label": f"i{tier}-{num}{suf.upper()}", "key": key, "eur": float(prices.get(key, 0)),
+                    "era": era, "ram": ram, "mobile": mobile}
+    m = PC_RYZEN.search(norm)
+    bare = None if m else PC_RYZEN_BARE.search(norm)
+    if m or bare:
+        if m:
+            tier, num, suf = m.group(1) or m.group(2), int(m.group(3)), m.group(4) or ""
+        else:
+            num, suf = int(bare.group(1)), bare.group(2)
+            tier = "9" if num % 1000 >= 900 else "7" if num % 1000 >= 700 else "5" if num % 1000 >= 500 else "3"
+        series = num // 1000
+        mobile = suf in PC_MOBILE_SUFFIX or series == 6
+        key = f"x3d-{series}" if suf == "x3d" else f"r{tier}-{series}"
+        era, ram = ("mid", "ddr4") if series <= 5 else ("top", "ddr5")
+        return {"label": f"Ryzen {tier} {num}{suf.upper()}", "key": key, "eur": float(prices.get(key, 0)),
+                "era": era, "ram": ram, "mobile": mobile}
+    return None
+
+
+def pc_find_ram(text):
+    """RAM of a PC advert (text = normalised, graphics card already cut out) -> (GB or None, 'ddr4'.. or None, guessed)."""
+    typ = re.search(r"\bddr\s*([345])\b", text)
+    typ = "ddr" + typ.group(1) if typ else None
+    kit = re.search(r"\b([1248])\s*x\s*(\d{1,2})\s*gb?\b" + PC_NOT_RAM, text)
+    if kit and int(kit.group(1)) * int(kit.group(2)) in PC_RAM_SIZES | {128}:
+        return int(kit.group(1)) * int(kit.group(2)), typ, False
+    m = re.search(r"\b(\d{1,3})\s*gb?\s*(?:of\s*)?(?:ddr\s*\d|ram|memory|μν[ήη]μη)", text) or \
+        re.search(r"\b(?:ram|memory|μν[ήη]μη|ddr\s*\d)\s*:?\s*(\d{1,3})\s*gb?\b", text)
+    if m and int(m.group(1)) in PC_RAM_SIZES | {128, 192, 256}:
+        return int(m.group(1)), typ, False
+    loose = {int(n) for n in re.findall(r"\b(\d{1,3})\s*gb\b" + PC_NOT_RAM, text)} & PC_RAM_SIZES
+    if len(loose) == 1:
+        return loose.pop(), typ, True
+    return None, typ, False
+
+
+def pc_parts(norm, cfg):
+    """What one piece of advert text says about the PC: {'gpu': ..., 'cpu': ..., 'ram': ...} (missing keys = not said)."""
+    parts = {}
+    rest = norm
+    gpu = pc_find_gpu(norm, cfg)
+    if gpu:
+        parts["gpu"] = gpu[:3]
+        rest = gpu[3]
+    cpu = pc_find_cpu(norm, cfg)
+    if cpu:
+        parts["cpu"] = cpu
+    gb, typ, guessed = pc_find_ram(rest)
+    if gb:
+        parts["ram"] = (gb, typ, guessed)
+    elif typ:
+        parts["ram_type"] = typ
+    return parts
+
+
+def pc_read(listing, cfg):
+    """Parts of a PC advert: the title first, the seller's description only for what the title leaves open."""
+    parts = pc_parts(normalise_title(listing["title"]), cfg)
+    if listing.get("desc"):
+        extra = pc_parts(normalise_title(listing["desc"]), cfg)
+        added = [k for k in ("gpu", "cpu", "ram", "ram_type") if k not in parts and k in extra]
+        for k in added:
+            parts[k] = extra[k]
+        if added:
+            parts["from_desc"] = True
+    return parts
+
+
+def pc_in_card_feed(listing, cfg):
+    """A whole PC among the marketplace graphics-card results: says PC/desktop AND names a processor or RAM.
+    (A card advert that merely mentions "PC" must not be valued as a computer; eBay and shop feeds hold cards only.)"""
+    if listing["site"] not in ("bazaraki", "vendora") or not PC_WORDS.search(listing["title"]):
+        return False
+    parts = pc_parts(normalise_title(listing["title"]), cfg)
+    return "cpu" in parts or "ram" in parts
+
+
+def pc_wants_details(listing, cfg):
+    """A bazaraki PC advert worth one extra request: not excluded, not cheap junk, title leaves parts open."""
+    pcfg = cfg["pcs"]
+    if any(rx.search(listing["title"]) for rx in pcfg["_exclude"]):
+        return False
+    if (listing.get("price") or 0) < float(pcfg.get("details_min_price", 150)):
+        return False
+    parts = pc_parts(normalise_title(listing["title"]), cfg)
+    return not all(k in parts for k in ("gpu", "cpu", "ram"))
+
+
+def classify_pc(listing, cfg):
+    """A complete PC -> (name for the alert, verdict, notes). verdict in {'deal','above','skip'}.
+    Sets listing['ceiling'] = the most this PC may cost to count as a deal."""
+    pcfg = cfg["pcs"]
+    for rx in pcfg["_exclude"]:
+        if rx.search(listing["title"]):
+            return None, "skip", [f"not a desktop PC: /{rx.pattern}/"]
+    parts = pc_read(listing, cfg)
+    cpu, gpu, ram = parts.get("cpu"), parts.get("gpu"), parts.get("ram")
+    if cpu and cpu["mobile"]:
+        return None, "skip", ["laptop or mini-PC processor"]
+    price = listing["price"]
+    if price is None or price <= 0:
+        return None, "skip", ["no price"]
+
+    lines, notes, value = [], [], 0.0
+    gpu_eur = gpu[1] if gpu else 0.0
+    if gpu:
+        value += gpu_eur
+        lines.append(f"{gpu[0]} {gpu_eur:.0f}")
+        if gpu[2]:
+            notes.append(gpu[2])
+    cpu_eur = cpu["eur"] if cpu else 0.0
+    if cpu:
+        value += cpu_eur
+        lines.append(f"{cpu['label']} {cpu_eur:.0f}")
+    ram_gb = ram[0] if ram else 0
+    rates = pcfg.get("ram_eur_per_gb", {})
+    if ram:
+        typ = ram[1] or parts.get("ram_type") or (cpu["ram"] if cpu else None)
+        rate = float(rates.get(typ, min(rates.values()) if rates else 0))
+        value += ram_gb * rate
+        lines.append(f"{ram_gb}GB {typ.upper() if typ else 'RAM'} {ram_gb * rate:.0f}")
+        if not ram[1] and not parts.get("ram_type"):
+            if cpu and cpu["era"] == "new" and "ddr5" in rates:
+                more = ram_gb * (float(rates["ddr5"]) - rate)
+                notes.append(f"RAM type not stated - DDR4 assumed; with DDR5 the parts are worth {more:.0f} more")
+            elif not cpu:
+                notes.append("RAM type not stated - priced as the cheapest type")
+        if ram[2]:
+            notes.append(f"RAM size read from '{ram_gb}GB' without the word RAM - check it")
+    rest_by = pcfg.get("rest_eur", {})
+    rest = float(rest_by.get(cpu["era"] if cpu else "unknown", 0))
+    if pcfg.get("_oem") and pcfg["_oem"].search(listing["title"]):
+        # brand-name office and gaming boxes: own board, PSU and case formats, little use or resale value
+        rest = min(rest, float(rest_by.get("oem", rest)))
+    value += rest
+    lines.append(f"{PC_REST_LABEL} {rest:.0f}")
+    if not cpu:
+        notes.append("processor not recognised - not counted")
+    if not gpu:
+        notes.append("no graphics card named - not counted")
+    if parts.get("from_desc"):
+        notes.append("some parts were read from the seller's description, not the title")
+
+    name = "PC " + " + ".join(x for x in [gpu[0] if gpu else None, cpu["label"] if cpu else None] if x)
+    pseudo = {"name": name.strip()}
+    listing["pc_value"] = value
+    listing["pc_parts"] = " + ".join(lines)
+    # worth an alert: a card from the 12GB+ watch list, or a strong base to put your own card into
+    watched_card = bool(gpu) and gpu_eur > 0 and any(g["name"] == gpu[0] for g in cfg["gpus"])
+    strong_base = cpu_eur >= float(pcfg.get("min_cpu_eur", 90)) and ram_gb >= int(pcfg.get("min_ram_gb", 16))
+    if not watched_card and not strong_base:
+        return pseudo, "skip", ["no 12GB+ graphics card and no strong processor + RAM recognised"]
+
+    ceiling = value * float(pcfg.get("max_price_ratio", 0.85))
+    if pcfg.get("budget_eur"):
+        ceiling = min(ceiling, float(pcfg["budget_eur"]))
+    listing["ceiling"] = ceiling
+    if price > ceiling:
+        return pseudo, "above", [f"{price:.0f} > ceiling {ceiling:.0f} (parts {value:.0f})"]
+    diff = round((price / value - 1) * 100)   # max_price_ratio above 1 also lets through PCs a little over their parts
+    head = [f"the parts bought used one by one cost about {value:.0f}: {listing['pc_parts']}",
+            f"{-diff}% cheaper as a ready PC" if diff < 0 else
+            "costs the same as its parts, but ready built" if diff == 0 else
+            f"{diff}% dearer than its parts, but ready built"]
+    if price < value * cfg.get("scam_ratio", 0.4):
+        if listing.get("skip_if_suspiciously_cheap"):
+            return pseudo, "skip", [f"{price:.0f} is under {cfg.get('scam_ratio', 0.4):g} x the parts ({value:.0f}) - "
+                                    "not a complete PC"]
+        head.append("SUSPICIOUSLY CHEAP - likely scam, never pay in advance")
+    elif price <= ceiling * cfg.get("great_deal_ratio", 0.8):
+        head.append("GREAT DEAL")
+    return pseudo, "deal", head + notes
+
+
 # ------------------------------------------------------------------------ matching
 def compile_config(cfg):
     cfg["_exclude"] = [re.compile(p, re.I) for p in cfg.get("exclude_title_patterns", [])]
     for g in cfg["gpus"]:
+        g["_re"] = re.compile(g["pattern"], re.I)
+    pcfg = cfg.get("pcs") or {}
+    pcfg["_exclude"] = [re.compile(p, re.I) for p in pcfg.get("exclude_title_patterns", [])]
+    pcfg["_oem"] = re.compile(pcfg["oem_title_pattern"], re.I) if pcfg.get("oem_title_pattern") else None
+    for g in pcfg.get("other_gpus", []):
         g["_re"] = re.compile(g["pattern"], re.I)
     for w in cfg.get("keyword_watches", []):
         w["_re"] = re.compile(w["pattern"], re.I)
@@ -914,10 +1247,19 @@ def save_json(path, data):
 # --------------------------------------------------------------------------- scan
 def scan(cfg, dry_run=False, list_all=False):
     src = cfg.get("sources", {})
+    force = dry_run or list_all
+    pcs_on = bool((cfg.get("pcs") or {}).get("enabled"))
     # the shops are read in background threads while the marketplaces are scraped
-    shop_jobs = start_shops(cfg) if shops_due(cfg, force=dry_run or list_all) else None
+    shop_pcs = pcs_on and cfg["pcs"].get("shops", True) and \
+        pcs_due(cfg, "pcs_shops_last", "shops_every_minutes", 180, force)
+    shop_jobs = start_shops(cfg, with_pcs=shop_pcs) if shops_due(cfg, force=force) else None
     listings = scrape_bazaraki(src.get("bazaraki_pages", 2)) + \
         scrape_vendora(src.get("vendora_pages", 2), src.get("vendora_searches", ["rtx", "radeon"]))
+    # complete desktop PCs have their own sections on both marketplaces
+    ran_pcs = pcs_due(cfg, force=force)
+    pc_listings = scrape_pcs(cfg) if ran_pcs else []
+    pc_ids = {l["id"] for l in pc_listings}
+    listings = [l for l in listings if l["id"] not in pc_ids] + pc_listings
     # keyword watches: site-wide searches, classified by their own pattern
     gpu_ids = {l["id"] for l in listings}
     watched = []
@@ -942,9 +1284,9 @@ def scan(cfg, dry_run=False, list_all=False):
                 ne += 1
             else:
                 watched.append((lst, w))
-    shop_counts, ns = {}, 0
+    shop_counts, shop_pc_counts, ns = {}, {}, 0
     if shop_jobs is not None:
-        found, shop_counts = collect_shops(shop_jobs, cfg)
+        found, shop_counts, shop_pc_counts = collect_shops(shop_jobs, cfg)
         listings += found
         ns = len(found)
 
@@ -953,9 +1295,26 @@ def scan(cfg, dry_run=False, list_all=False):
     deals = []
     rows = []
     items = [(l, None) for l in listings] + watched
+    details_left = int((cfg.get("pcs") or {}).get("detail_fetches_per_scan", 6))
     for lst, watch in items:
+        prev = state.get(lst["id"])
+        is_pc = False
         if watch is None:
-            gpu, verdict, notes = classify(lst, cfg)
+            if lst.get("kind") == "pc":
+                is_pc = True
+            else:
+                gpu, verdict, notes = classify(lst, cfg)
+                # a whole PC in the graphics-card feeds (skipped there as "not a card")
+                is_pc = pcs_on and verdict == "skip" and gpu is None and pc_in_card_feed(lst, cfg)
+            if is_pc:
+                if prev and "desc" in prev:
+                    lst["desc"] = prev["desc"]
+                elif lst["site"] == "bazaraki" and details_left > 0 and pc_wants_details(lst, cfg):
+                    # the specs are often only in the seller's text: read it once per advert
+                    details_left -= 1
+                    lst["desc"] = bazaraki_description(lst["url"])
+                    time.sleep(1.5)
+                gpu, verdict, notes = classify_pc(lst, cfg)
         else:
             gpu, verdict, notes = classify_watch(lst, watch, cfg)
             if verdict == "skip":
@@ -964,17 +1323,20 @@ def scan(cfg, dry_run=False, list_all=False):
             notes = notes + lst["extra_notes"]
         if list_all and gpu and verdict != "skip":
             rows.append((lst, gpu, verdict, notes))
-        prev = state.get(lst["id"])
         if verdict == "deal":
             kind = None
             if prev is None:
                 kind = "new"
             elif not prev.get("alerted") and prev.get("price") is not None and lst["price"] < prev["price"]:
                 kind = "drop"
+            elif not prev.get("alerted") and is_pc:
+                # seen before, but a deal only now: first read as a PC, the seller's description
+                # was read, or the pcs settings were loosened
+                kind = "new"
             if kind:
                 deals.append((format_deal(lst, gpu, notes, kind), lst, gpu))
         is_shop = watch is None and lst["site"] in SHOPS
-        biz = business_drop(lst, gpu, verdict, prev, cfg) if is_shop else None
+        biz = business_drop(lst, gpu, verdict, prev, cfg) if is_shop and not is_pc else None
         if biz:
             deals.append(biz)
         if not dry_run:
@@ -983,6 +1345,10 @@ def scan(cfg, dry_run=False, list_all=False):
                 entry["first_price"] = entry.get("price") or lst["price"]   # reference for price-drop alerts
             entry["price"] = lst["price"]
             entry["last_seen"] = now
+            if is_pc:
+                entry["pc"] = True
+                if "desc" in lst:
+                    entry["desc"] = lst["desc"]
             if verdict == "deal":
                 entry["alerted"] = True
             if biz:
@@ -997,19 +1363,28 @@ def scan(cfg, dry_run=False, list_all=False):
             meta["ebay_warned"] = now
     if shop_jobs is not None and not dry_run:
         state.setdefault("_meta", {})["shops_last"] = time.time()
+        if shop_pcs:
+            state["_meta"]["pcs_shops_last"] = time.time()
+    if ran_pcs and not dry_run:
+        state.setdefault("_meta", {})["pcs_last"] = time.time()
     if not dry_run:
         cutoff = (dt.datetime.now() - dt.timedelta(days=90)).isoformat()
         state = {k: v for k, v in state.items() if v.get("last_seen", now) >= cutoff}
         save_json(STATE_PATH, state)
 
-    nb = sum(1 for l in listings if l["site"] == "bazaraki")
-    nv = sum(1 for l in listings if l["site"] == "vendora")
+    npc = sum(1 for l in listings if l.get("kind") == "pc")
+    nb = sum(1 for l in listings if l["site"] == "bazaraki" and l.get("kind") != "pc")
+    nv = sum(1 for l in listings if l["site"] == "vendora" and l.get("kind") != "pc")
+    ns -= sum(1 for l in listings if l.get("kind") == "pc" and l["site"] in SHOPS)
     ebay_txt = f", {ne} ebay" if ran_ebay else ""
     shop_txt = f", {ns} in stock at shops" if shop_jobs is not None else ""
-    log(f"scanned {len(listings)} GPU listings ({nb} bazaraki, {nv} vendora{ebay_txt}{shop_txt}) + {len(watched)} "
-        f"keyword-search results -> {len(deals)} new deal(s)")
+    pc_txt = f" + {npc} ready PCs" if npc else ""
+    log(f"scanned {len(listings) - npc} GPU listings ({nb} bazaraki, {nv} vendora{ebay_txt}{shop_txt}){pc_txt} + "
+        f"{len(watched)} keyword-search results -> {len(deals)} new deal(s)")
     if shop_counts:
         log("shops (cards read): " + ", ".join(f"{k} {v}" for k, v in shop_counts.items()))
+    if shop_pcs and any(shop_pc_counts.values()):
+        log("shops (complete PCs read): " + ", ".join(f"{k} {v}" for k, v in shop_pc_counts.items()))
     empty = [s for s, n in [("bazaraki", nb), ("vendora", nv)] + list(shop_counts.items()) if n == 0]
     if empty and not dry_run:
         # a site returned nothing: blocked, down or changed layout. Warn on Telegram at most once a day.
@@ -1025,11 +1400,13 @@ def scan(cfg, dry_run=False, list_all=False):
 
     if list_all:
         rows.sort(key=lambda r: (r[0]["price"] or 0) / max(r[0].get("ceiling") or 1, 1))
-        print(f"\n{'site':9} {'price':>7} {'ceiling':>8}  {'model':22} title")
+        print(f"\n{'site':9} {'price':>7} {'ceiling':>8}  {'model':34} title")
         for lst, gpu, verdict, notes in rows:
             flag = "DEAL " if verdict == "deal" else "     "
-            print(f"{lst['site']:9} {lst['price'] or 0:7.0f} {lst.get('ceiling') or 0:8.0f} {flag}{gpu['name']:22} "
+            print(f"{lst['site']:9} {lst['price'] or 0:7.0f} {lst.get('ceiling') or 0:8.0f} {flag}{gpu['name'][:34]:34} "
                   f"{lst['title'][:70]}  {lst['url']}")
+            if lst.get("pc_parts"):   # a ready PC: what its ceiling is made of
+                print(f"{'':32}parts {lst['pc_value']:.0f} = {lst['pc_parts']}")
     send_alerts(deals, cfg, dry_run=dry_run)
     return deals
 
