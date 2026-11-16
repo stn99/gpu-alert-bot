@@ -4,7 +4,8 @@ Watches the newest GPU listings on both Cypriot marketplaces and alerts you when
 card with **12 GB VRAM or more** shows up at or below what it is worth second-hand
 (and never above your **600 EUR** budget). It also watches **complete desktop PCs**
 and alerts when one is clearly cheaper than its parts bought separately (see
-"Ready PCs" below).
+"Ready PCs" below), and **processors, motherboards, RAM and SSDs** for a platform
+upgrade (see "Upgrade parts" below).
 
 ## Files
 
@@ -68,7 +69,7 @@ new listings (or price drops) trigger alerts.
 * For graphics cards only titles are parsed. A seller who writes just "graphics card"
   will be missed. (For ready PCs the description is read too, see below.)
 * Keep `poll_minutes` at 5 or more; the bot fetches about 20 pages per scan, plus 4
-  for ready PCs every 10 minutes.
+  for ready PCs and 15 for parts every 10 minutes.
 
 ## Running in the cloud (PC can be off)
 
@@ -243,6 +244,91 @@ that day: DDR5 about 13.5 EUR/GB (32 GB = 430), DDR4 about 4.2 EUR/GB. Refresh t
 tables every few weeks. To see more PCs raise `max_price_ratio` or lower `min_cpu_eur`;
 a PC seen earlier that qualifies only after the change alerts once.
 `python gpu_alert.py --list` shows every valued PC with its ceiling.
+
+## Upgrade parts: processors, motherboards, RAM and SSDs
+
+The `parts` section of `config.json` watches single parts for a new platform, plus
+processor + board (+ RAM) bundles, on every source the bot already reads.
+
+**The rule.** Every part on the lists has a reference price: the cheapest it costs
+**new in Cyprus**, in stock, at the four shops or a dealer on bazaraki. You get an alert
+when a part costs clearly less than that:
+
+| Where | Alert when the price is at most |
+|---|---|
+| a local advert (bazaraki, vendora) | `max_price_ratio` (0.75) x the new price: at least a quarter cheaper than new |
+| eBay, delivered to Cyprus | `ebay_price_ratio` (0.7) x the new price |
+| one of the four shops | `shops_price_ratio` (0.85) x the new price |
+| one of the four shops, second way | `[SHOP PRICE CUT]`: the shop cut its own price by `shop_cut_pct` (15%) or more since the bot first saw the product |
+
+GREAT DEAL marks anything at or under 80% of its ceiling. The alert shows the new
+price it was compared with, for example
+`new it costs from about 204 in Cyprus - this is 26% under that`.
+
+**Current generation first.** The build is meant to last many years, so the parts in
+`current_generation` (AM5 and LGA1851 processors and boards, DDR5, NVMe SSDs) alert at
+the ratios above. Older generations on the lists (AM4, LGA1700, DDR4, SATA SSDs) have
+their ceiling multiplied by `older_generation_ratio` (0.8): an older part in a local
+advert must be at least 40% under its new price, so it only shows up as a very good
+deal, with a note saying it is the older generation. Shop price cuts are not reported
+for older parts. Set the ratio to 1.0 to treat all generations alike.
+
+What is watched:
+
+* **Processors**: the models in `cpu_eur`: Ryzen 5 5600 and up on AM4, Ryzen 7000 and
+  9000 on AM5, Core i5-12400 and up, Core Ultra 200. Other chips (a 5600G, an old i7, a
+  laptop chip) are recognised and left out. The alert names the socket and RAM type.
+* **Motherboards**: by chipset (`board_eur`), compared with the cheapest new board with
+  that chipset. A premium board is therefore judged against a basic one; that is on
+  purpose, it keeps the alerts to real bargains.
+* **RAM**: desktop DDR4 and DDR5 with `ram_min_gb` (16) or more in total, priced per GB
+  (`ram_eur_per_gb`). Laptop (SO-DIMM) and server (ECC) RAM is skipped, so is DDR4 slower
+  than `ram_min_mhz.ddr4` (3000), and so is an advert that names neither DDR4/DDR5 nor a
+  speed.
+* **SSDs**: internal drives of `ssd_min_gb` (900, so 1 TB and up), NVMe and SATA priced
+  apart by capacity (`ssd_eur`). Hard disks, external drives, enclosures and adapters
+  are skipped. For a used SSD ask the seller for a CrystalDiskInfo screenshot.
+* **Bundles**: a processor with a board (and RAM) is compared with the sum of its parts.
+  It only counts when the processor is on the list; a bundle with a graphics card is
+  left to the ready-PC search.
+
+Where it looks:
+
+| Source | How |
+|---|---|
+| bazaraki | the newest adverts of its processor, motherboard, RAM and SSD sections, every `every_minutes` (10) |
+| vendora | its component feed (already read for the cards) plus `vendora_searches`, every `every_minutes` |
+| eBay | the official Browse API with the keys you already stored, every `ebay_every_minutes` (30), sellers in the EU only (`ebay_eu_sellers_only`); about 1,000 more of the 5,000 free calls per day |
+| Armenius, Bionic, Custom PC, ComputerG | their processor, motherboard, RAM and SSD categories, **one kind per run** every `shops_every_minutes` (60), so each kind is refreshed about every 4 hours and a shop run stays short. ComputerG: its newest 480 products per kind |
+
+How it stays careful:
+
+* The **first read of each source** finds every advert that is already there. Those are
+  only written to `alerts.log`, marked `FIRST READ, NOT SENT`, so your phone does not
+  get a burst. From then on only new adverts and price drops are sent.
+* Old Intel chips share numbers with new Ryzens (i5-7600 / Ryzen 5 7600, i9-7900X /
+  Ryzen 9 7900X). Core i models count only with 5 digits, Ryzen with 4, Core Ultra with 3.
+* A size in GB in a motherboard's title is the most RAM it takes, not RAM that comes
+  with it. G.Skill part numbers ("48-GX2-TZ5NR") are not kits.
+* A whole computer or laptop that names its parts is not a part: an advert with RAM and
+  a drive, or a processor with RAM but no board, is left out.
+* Under `scam_ratio` (0.25) x the new price a shop or eBay item is skipped (an
+  accessory, an empty box or a fake) and a local advert is tagged SUSPICIOUSLY CHEAP.
+* In bazaraki's parts sections an advert that is no part is still checked as a
+  graphics card or PC (sellers file things in the wrong section).
+
+Why new prices and not used ones: measured on 2026-11-16 through the eBay API, used
+parts delivered to Cyprus cost more than the same parts new from a Cypriot shop (a used
+Ryzen 5 5600 around 175, new here from 139; a used B550 board around 185, new here from
+85). So "a quarter under the cheapest new price here" is the stricter and more honest
+yardstick.
+
+The prices were read on 2026-11-16. Parts no longer sold new carry an estimate, and an
+older model is never priced above a newer, faster one. RAM and SSD prices are moving
+fast in this shortage: refresh `cpu_eur`, `board_eur`, `ram_eur_per_gb` and `ssd_eur`
+every few weeks. To see more, raise `max_price_ratio`; a part seen earlier that
+qualifies only after the change alerts once. `python gpu_alert.py --list` shows every
+recognised part with its ceiling next to the cards.
 
 ## Second buyer: a VAT-registered business
 

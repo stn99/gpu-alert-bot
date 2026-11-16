@@ -7,6 +7,10 @@ the Cypriot computer shops Armenius, Bionic, Custom PC and ComputerG.
 It also watches complete desktop PCs on the marketplaces and in the shops (config
 "pcs") and alerts when one costs clearly less than its parts bought separately.
 
+And it watches single parts for a platform upgrade (config "parts"): processors,
+motherboards, desktop RAM and SSDs on the same sites, alerting when one costs clearly
+less than the cheapest new price in Cyprus.
+
 Scans the newest GPU listings on both sites, recognises the card model from the
 title, checks the VRAM requirement and compares the price against a per-model
 ceiling (never above your overall budget).  New matches are pushed as a Windows
@@ -368,6 +372,7 @@ def ebay_item_to_listing(item, marketplace, cfg):
         "skip_if_suspiciously_cheap": bool(ecfg.get("skip_suspiciously_cheap", True)),
         "when": f"listed {when} UTC" if when else "",
         "location": ", ".join(x for x in [loc.get("city"), country] if x),
+        "country": country,
         "seller": who,
         "ceiling_factor": float(ecfg.get("ceiling_factor", 1.0) or 1.0),
         "extra_notes": notes,
@@ -385,19 +390,22 @@ def ebay_due(cfg, force=False):
     return time.time() - float(last or 0) >= 60 * float(ecfg.get("every_minutes", 10)) - 30
 
 
-def ebay_scan(cfg):
-    """GPU searches plus keyword watches marked "ebay": true.
+def ebay_scan(cfg, jobs=None, excl=None):
+    """GPU searches plus keyword watches marked "ebay": true - or, when given, other searches as
+    jobs = [(query, category id, highest item price, watch)] with their own title exclusions.
     Returns ([(listing, watch or None)], error text or None)."""
     ecfg = cfg.get("ebay") or {}
-    budget = float(cfg.get("budget_eur", 600))
-    jobs = [(q, ecfg.get("gpu_category", EBAY_GPU_CATEGORY), budget, None)
-            for q in ecfg.get("gpu_searches") or EBAY_DEFAULT_GPU_SEARCHES]
-    for w in cfg.get("keyword_watches", []):
-        terms = w.get("ebay_searches") or w.get("searches") or []
-        if w.get("ebay") and terms:
-            q = terms[0] if len(terms) == 1 else "(" + ", ".join(terms) + ")"
-            jobs.append((q, w.get("ebay_category"), w.get("max_eur"), w))
-    excl = [re.compile(p, re.I) for p in ecfg.get("exclude_title_patterns", [])]
+    if jobs is None:
+        budget = float(cfg.get("budget_eur", 600))
+        jobs = [(q, ecfg.get("gpu_category", EBAY_GPU_CATEGORY), budget, None)
+                for q in ecfg.get("gpu_searches") or EBAY_DEFAULT_GPU_SEARCHES]
+        for w in cfg.get("keyword_watches", []):
+            terms = w.get("ebay_searches") or w.get("searches") or []
+            if w.get("ebay") and terms:
+                q = terms[0] if len(terms) == 1 else "(" + ", ".join(terms) + ")"
+                jobs.append((q, w.get("ebay_category"), w.get("max_eur"), w))
+    if excl is None:
+        excl = [re.compile(p, re.I) for p in ecfg.get("exclude_title_patterns", [])]
     country = str(ecfg.get("deliver_to", "CY")).upper()
     out, seen = [], set()
     try:
@@ -500,6 +508,19 @@ BIONIC_PC_URL = "https://bionic.com.cy/en/products/c/computers?page={page}&per_p
 CUSTOMPC_PC_PATHS = ["pc-systems/gaming-series/", "pc-systems/creator-series/", "pc-systems/exclusive-series/",
                      "pc-systems/next-day-desktops/"]
 COMPUTERG_PC_URL = "https://www.computerg.shop/shop/category/pcs-workstations-110"
+# the same shops' processors, motherboards, RAM and SSDs (config "parts"), read with the same parsers
+ARMENIUS_PART_API = "https://armenius.com.cy/wp-json/wc/store/v1/products?category={cat}&per_page=100&page={page}"
+BIONIC_PART_URL = "https://bionic.com.cy/en/products/c/{cat}?page={page}&per_page=48"
+COMPUTERG_PART_URL = "https://www.computerg.shop/shop/category/{cat}"
+SHOP_PART_CATS = {
+    "armenius": {"cpu": "cpu-processors", "board": "motherboards", "ram": "ram-memory", "ssd": "storage-ssd-hdd"},
+    "bionic": {"cpu": "cpu", "board": "motherboards", "ram": "memory-modules", "ssd": "hard-disks-ssd"},
+    "custompc": {"cpu": ["components/processors/amd-processors/", "components/processors/intel-processors/"],
+                 "board": ["components/motherboards/amd-motherboards/", "components/motherboards/intel-motherboards/"],
+                 "ram": ["components/memory/"], "ssd": ["components/ssd-solid-state-drives/"]},
+    "computerg": {"cpu": "cpus-215", "board": "pc-motherboards-120", "ram": "desktop-memory-ram-104",
+                  "ssd": "ssds-solidstatedrives-105"},
+}
 
 
 def _shop_item(site, sid, title, price, url, in_stock, notes):
@@ -544,10 +565,10 @@ def shop_armenius(api=ARMENIUS_API, per_page=100):
     return out
 
 
-def shop_bionic(url=BIONIC_URL):
+def shop_bionic(url=BIONIC_URL, pages=5):
     """The product list the category page embeds as JSON (prices include VAT)."""
     out = []
-    for page in range(1, 6):
+    for page in range(1, pages + 1):
         if page > 1:
             time.sleep(3)
         h = fetch(url.format(page=page), ua=SHOP_UA)
@@ -643,9 +664,32 @@ SHOP_PCS = {"armenius": lambda: shop_armenius(ARMENIUS_PC_API, 50), "bionic": la
             "computerg": lambda: shop_computerg(COMPUTERG_PC_URL, pages=15)}
 
 
-def _shop_job(name, with_pcs):
-    """One shop, one thread: its graphics cards, then (when due) its complete PCs, at the shop's own pace."""
+def shop_parts(name, kind):
+    """One shop's processors, motherboards, RAM or SSDs (kind = cpu | board | ram | ssd)."""
+    cat = SHOP_PART_CATS[name][kind]
+    if name == "armenius":
+        return shop_armenius(ARMENIUS_PART_API.replace("{cat}", cat), 100)
+    if name == "bionic":
+        return shop_bionic(BIONIC_PART_URL.replace("{cat}", cat), pages=12)
+    if name == "custompc":
+        return shop_custompc(cat)
+    return shop_computerg(COMPUTERG_PART_URL.format(cat=cat), pages=20)   # its newest 480 products
+
+
+def _shop_job(name, with_pcs, part_kind=None):
+    """One shop, one thread: its graphics cards, then (when due) its complete PCs and one kind of parts,
+    at the shop's own pace."""
     items = SHOPS[name]()
+    if part_kind:
+        time.sleep(10)
+        try:
+            parts = shop_parts(name, part_kind)
+        except Exception as e:  # noqa: BLE001
+            log(f"SHOP PARTS FAILED {name}: {e!r}")
+            parts = []
+        for p in parts:
+            p["kind"], p["src"] = "part", "shop:" + part_kind
+        items = items + parts
     if with_pcs:
         time.sleep(10)
         try:
@@ -670,21 +714,22 @@ def shops_due(cfg, force=False):
     return time.time() - float(last or 0) >= 60 * float(scfg.get("every_minutes", 30)) - 30
 
 
-def start_shops(cfg, with_pcs=False):
+def start_shops(cfg, with_pcs=False, part_kind=None):
     """Read every enabled shop in its own thread (each keeps its own pace), while the rest of the scan runs."""
     scfg = cfg.get("shops") or {}
     names = [n for n in SHOPS if scfg.get(n, True)]
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(names))
-    jobs = {n: pool.submit(_shop_job, n, with_pcs) for n in names}
+    jobs = {n: pool.submit(_shop_job, n, with_pcs, part_kind) for n in names}
     pool.shutdown(wait=False)
     return jobs
 
 
 def collect_shops(jobs, cfg):
-    """-> (listings you can order now, {shop: cards read in total}, {shop: complete PCs read})"""
+    """-> (listings you can order now, {shop: cards read in total}, {shop: complete PCs read}, {shop: parts read})"""
     scfg = cfg.get("shops") or {}
     factor = float(scfg.get("ceiling_factor", 1.0) or 1.0)
-    out, counts, pc_counts, seen = [], {}, {}, set()
+    part_ratio = float((cfg.get("parts") or {}).get("shops_price_ratio", 1.0) or 1.0)
+    out, counts, pc_counts, part_counts, seen = [], {}, {}, {}, set()
     for name, job in jobs.items():
         try:
             items = job.result(timeout=1500)
@@ -692,7 +737,8 @@ def collect_shops(jobs, cfg):
             log(f"SHOP FAILED {name}: {e!r}")
             items = []
         pc_counts[name] = sum(1 for lst in items if lst.get("kind") == "pc")
-        counts[name] = len(items) - pc_counts[name]
+        part_counts[name] = sum(1 for lst in items if lst.get("kind") == "part")
+        counts[name] = len(items) - pc_counts[name] - part_counts[name]
         for lst in items:
             if not lst.pop("in_stock") or lst["id"] in seen:
                 continue
@@ -700,8 +746,10 @@ def collect_shops(jobs, cfg):
             lst["ceiling_factor"] = factor
             # a "card" at a shop under scam_ratio x its used value is an accessory or another product
             lst["skip_if_suspiciously_cheap"] = True
+            if lst.get("kind") == "part":
+                lst["part_ratio"] = part_ratio
             out.append(lst)
-    return out, counts, pc_counts
+    return out, counts, pc_counts, part_counts
 
 
 def business_drop(lst, gpu, verdict, prev, cfg):
@@ -1026,6 +1074,407 @@ def classify_pc(listing, cfg):
     return pseudo, "deal", head + notes
 
 
+# -------------------------------------------------------------------- single parts
+# Processors, motherboards, desktop RAM and SSDs for a platform upgrade (config "parts").
+# Every part on the watch list has a reference price: the cheapest it costs NEW in Cyprus
+# (shops and dealers, in stock). An advert is a deal when its price is at most that
+# reference times the ratio of its source (local advert, eBay, shop). A processor + board
+# (+ RAM) bundle is compared with the sum of its parts. Used prices on eBay are no use as
+# a reference here: delivered to Cyprus they were higher than new parts bought locally.
+BAZARAKI_PART_URL = "https://www.bazaraki.com/computers-and-games/hardware/{cat}/?ordering=newest&page={page}"
+BAZARAKI_PART_CATS = ("cpu", "motherboards", "ram", "ssd-hdd")
+PART_KINDS = ("cpu", "board", "ram", "ssd")
+EBAY_PART_CATEGORIES = {"cpu": "164", "board": "1244", "ram": "170083", "ssd": "175669"}
+PART_PLATFORMS = {   # socket: (RAM its boards take, chipsets). LGA1700 boards exist for DDR4 and for DDR5.
+    "AM4": ("ddr4", "a520 b450 b550 x470 x570"),
+    "AM5": ("ddr5", "a620 b650 x670 b840 b850 x870"),
+    "LGA1700": (None, "h610 b660 b760 h670 h770 z690 z790"),
+    "LGA1851": ("ddr5", "h810 b860 z890"),
+}
+PART_COMPUTER = re.compile(
+    r"laptop|notebook|λ[άa]πτοπ|macbook|chromebook|ultrabook|\bimac\b|\bmac\s*(mini|pro|studio)\b|all\s?in\s?one|"
+    r"(?<!for )(?<!για )\b(gaming|mini|micro|office|tower|custom|used)\s*(pc|desktop|computer)\b|"
+    r"(?<!for )(?<!για )\bdesktop\s*(pc|computer)\b(?!\s*(ram|memory|μν))|\bpc\s*(with|gaming|tower|set)\b|"
+    r"υπολογιστ|workstation|thinkpad|thinkcentre|latitude|optiplex|elitebook|elitedesk|prodesk|probook|ideapad|"
+    r"ideacentre|inspiron|\bnuc\b|\btablet\b|\bipad\b|\bserver\b|\bnas\b")
+PART_BUNDLE_WORD = re.compile(r"mother\s?board|mainboard|μητρικ|\bmobo\b|\bbundle\b|\bcombo\b|\bboard\b|upgrade (kit|package)")
+PART_STORAGE = re.compile(r"\b\d+\s*(?:gb|tb)\s*(?:ssd|hdd|nvme|m\.?2|sata|emmc|σκληρ|δ[ίι]σκ)|"
+                          r"\b(?:ssd|hdd|nvme)\s*:?\s*\d+\s*(?:gb|tb)\b")
+PART_RAM_WORD = re.compile(r"\b(ram|memory|u?dimm|μν[ήη]μ\w*|ddr\s*[2345]l?|pc[2345]l?)\b")
+PART_RAM_NOT_DESKTOP = re.compile(r"so\s?dimm|laptop|notebook|\becc\b|registered|\bl?rdimm\b|\bserver\b|macbook|\bimac\b|\breg\b|"
+                                  r"\bcamm2?\b|pavill?on|elitebook|probook|thinkpad|latitude|inspiron|precision|ideapad|"
+                                  r"vivobook|zenbook|\baspire\b|poweredge|proliant|\bktd pe|\bkth pl|\bct\d+g\w*s[45]\b")
+PART_RAM_NOT_RAM = re.compile(r"graphics|\bgpu\b|video card|geforce|radeon|quadro|\b(rtx|gtx|rx)\b|γραφικ|\bvga\b|tester|\bcooler\b")
+PART_RAM_SIZES = {4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192}
+PART_RAM_SPEEDS = {"ddr4": (2133, 2400, 2666, 2800, 2933, 3000, 3200, 3333, 3466, 3600, 3733, 3800, 4000, 4133, 4266,
+                            4400, 4600),
+                   "ddr5": (4800, 5200, 5600, 6000, 6200, 6400, 6600, 6800, 7000, 7200, 7600, 8000, 8200, 8400)}
+PART_NOT_RAM_SIZE = (r"(?!\s*(?:ssd|hdd|nvme|m\.?2|sata|storage|emmc|usb|vram|gddr|rom|flash|micro\s?sd|sd\b|card|"
+                     r"/\s*s|σκληρ|δ[ίι]σκ))")
+# "board for CPUs up to the 5800X": a processor the board supports, not one that comes with it
+PART_SUPPORTS = re.compile(r"bis zu|up to|supports?|compatible|kompatib|unterst[üu]tz")
+# a phone's or tablet's mainboard ("Samsung A5 2017 A520F Mainboard")
+PART_NOT_PC_BOARD = re.compile(r"samsung|galaxy|iphone|xiaomi|huawei|redmi|handy|smartphone|\bphone\b")
+PART_SSD_WORD = re.compile(r"\bssd\b|\bnvme\b|solid state|\bm[. ]?2\b")
+PART_HDD = re.compile(r"\bhdd\b|hard\s?(disk|drive)|3[.,]5\s*(\"|''|inch|in\b|zoll|ίντσ)|\brpm\b|festplatte|barracuda|ironwolf|"
+                      r"skyhawk|\bexos\b|surveillance")
+# well-known model lines, for adverts that give no interface ("Samsung 990 Pro 2TB")
+PART_SSD_NVME_MODELS = re.compile(r"\b(9[6789]0\s*(pro|evo)|9100\s*pro|sn\s?\d{3,4}x?|kc3000|nv[123]|p[35]\s*plus|p310|p510|"
+                                  r"t[57]0[05]|mp[567]00|nm\d{3}|firecuda\s*5[1234]0|sx8[12]00|pm9[a-e]\w*)\b")
+PART_SSD_SATA_MODELS = re.compile(r"\b(8[5-7]0\s*(evo|pro|qvo)|mx500|bx500|a400|sa510|su\d{3})\b")
+PART_SSD_NOT_INTERNAL = re.compile(r"extern|portable|φορητ|εξωτερικ|\busb\b|type\s?c\b|thunderbolt|enclosure|\bcaddy\b|"
+                                   r"adapter|\bdock|reader|\bcase\b|θήκη")
+
+
+def parts_due(cfg, key="parts_last", every="every_minutes", default=10, force=False):
+    """True when the parts search is switched on and its interval has passed."""
+    pcfg = cfg.get("parts") or {}
+    if not pcfg.get("enabled"):
+        return False
+    if force:
+        return True
+    last = (load_json(STATE_PATH, {}) or {}).get("_meta", {}).get(key, 0)
+    return time.time() - float(last or 0) >= 60 * float(pcfg.get(every, default)) - 30
+
+
+def scrape_parts(cfg):
+    """Newest adverts of bazaraki's processor, motherboard, RAM and SSD sections, plus vendora searches."""
+    pcfg = cfg["parts"]
+    pages = int(pcfg.get("bazaraki_pages", 2))
+    found = scrape_bazaraki_urls([BAZARAKI_PART_URL.format(cat=c, page=p)
+                                  for c in BAZARAKI_PART_CATS for p in range(1, pages + 1)])
+    found += scrape_vendora_urls([VENDORA_SEARCH_URL.format(q=urllib.parse.quote(q))
+                                  for q in pcfg.get("vendora_searches", [])])
+    out, seen = [], set()
+    for lst in found:
+        if lst["id"] not in seen:
+            seen.add(lst["id"])
+            lst["kind"], lst["src"] = "part", "market"
+            out.append(lst)
+    return out
+
+
+def part_cpu_value(cpu, cfg):
+    """(EUR, on the watch list?) for a processor read by pc_find_cpu: its own price from parts.cpu_eur
+    (an F model without its own entry counts as the model with graphics), else the family price of the
+    ready-PC tables."""
+    table = cfg["parts"].get("cpu_eur", {})
+    key = cpu["label"].split()[-1].split("-")[-1].lower()   # 'Ryzen 7 5800X' -> 5800x, 'i5-12400F' -> 12400f
+    # the table is keyed by model number only, and old Intel chips share numbers with new Ryzens
+    # (i5-7600 / Ryzen 5 7600, i9-7900X / Ryzen 9 7900X): Core i models have 5 digits, Ryzen 4, Core Ultra 3
+    digits = len(re.match(r"\d*", key).group(0))
+    if digits == {"i": 5, "u": 3}.get(cpu["key"][0], 4):
+        for k in (key, key[:-1] if key.endswith("f") else key):
+            if k in table:
+                return float(table[k]), True
+    return float(cpu.get("eur") or 0), False
+
+
+def part_cpu_socket(cpu):
+    fam, _, gen = cpu["key"].partition("-")
+    gen = int(gen) if gen.isdigit() else 0
+    if fam.startswith("u"):
+        return "LGA1851, DDR5"
+    if fam.startswith("i"):
+        return "LGA1700, DDR4 or DDR5 boards" if gen >= 12 else "LGA1200, DDR4" if gen >= 10 else "old socket"
+    return "AM4, DDR4" if gen <= 5 else "AM5, DDR5"
+
+
+def part_is_older(tag, cfg):
+    """True for a part of an older generation (config parts.current_generation lists the current ones:
+    sockets, RAM types, SSD interfaces). Older parts must be cheaper to alert (older_generation_ratio)."""
+    current = (cfg.get("parts") or {}).get("current_generation")
+    return bool(current) and str(tag).upper() not in {str(c).upper() for c in current}
+
+
+def part_board(norm, cfg):
+    """A motherboard chipset from the watch list -> (chipset, socket, RAM type or None), else None."""
+    rx = cfg["parts"].get("_board")
+    m = rx.search(norm) if rx else None
+    if not m:
+        return None
+    socket, ram = cfg["parts"]["_platform"].get(m.group(1), ("?", None))
+    if ram is None:
+        ram = "ddr4" if re.search(r"\bddr\s*4\b|\bd4\b", norm) else "ddr5" if re.search(r"\bddr\s*5\b|\bd5\b", norm) else None
+    return m.group(1), socket, ram
+
+
+def part_ram(norm):
+    """RAM named in an advert -> dict(gb=total, type='ddr4'.., mhz, desktop) or None when no clear size is given."""
+    m = re.search(r"\bddr\s*([2345])", norm) or re.search(r"\bpc([2345])l?\b", norm)
+    typ = "ddr" + m.group(1) if m else None
+    pool = PART_RAM_SPEEDS.get(typ) or PART_RAM_SPEEDS["ddr4"] + PART_RAM_SPEEDS["ddr5"]
+    speeds = [s for s in (int(n) for n in re.findall(r"(?<![\d.,])(\d{4})(?![.,]?\d)", norm)) if s in pool]
+    speeds += [min(pool, key=lambda s, n=n: abs(s - int(n) / 8)) for n in re.findall(r"\bpc[45]l?\s*(\d{5})\b", norm)]
+    if typ is None and speeds:
+        typ = "ddr5" if min(speeds) >= 4800 else "ddr4"
+    # "gb" must be written out: G.Skill part numbers read like kits ("48-GX2-TZ5NR")
+    kit_a, kit_b = r"\b([1-8])\s*x\s*(\d{1,3})\s*gb\b", r"\b(\d{1,3})\s*gb\s*x\s*([1-8])\b"
+    kits = [int(a) * int(b) for a, b in re.findall(kit_a, norm)] + [int(a) * int(b) for a, b in re.findall(kit_b, norm)]
+    rest = re.sub(kit_a + "|" + kit_b, " ", norm)
+    alone = sorted({int(n) for n in re.findall(r"\b(\d{1,3})\s*gb\b" + PART_NOT_RAM_SIZE, rest)} & PART_RAM_SIZES)
+    if kits:
+        total = max(kits) if len(set(kits)) == 1 or max(kits) in alone else None
+    elif len(alone) == 1:
+        total = alone[0]
+    elif len(alone) == 2 and alone[1] in (2 * alone[0], 4 * alone[0]):
+        total = alone[1]   # "32GB kit, 2 of 16GB"
+    else:
+        total = None       # no size, or a list of sizes to choose from
+    if not total or re.search(r"\d\s*gb\s*/\s*\d+\s*gb", norm):   # "16GB / 32GB": sizes to choose from
+        return None
+    return {"gb": total, "type": typ, "mhz": min(speeds) if speeds else None,
+            "desktop": not PART_RAM_NOT_DESKTOP.search(norm)}
+
+
+def part_ssd(norm):
+    """An internal SSD -> (GB, 'nvme' | 'sata' | None when the advert does not say), else None."""
+    if not PART_SSD_WORD.search(norm) or PART_HDD.search(norm) or PART_SSD_NOT_INTERNAL.search(norm):
+        return None
+    sizes = [float(n.replace(",", ".")) * 1000 for n in re.findall(r"(?<![\d.,])(\d{1,2}(?:[.,]\d)?)\s*tb\b", norm)]
+    sizes += [float(n) for n in re.findall(r"(?<![\d.,])(\d{3,4})\s*gb\b(?!\s*/\s*s|ps)", norm)]
+    if not sizes or max(sizes) > min(sizes) * 1.08:
+        return None   # no capacity, or several capacities to choose from
+    if re.search(r"\bsata|\b2[., ]5\b", norm) or PART_SSD_SATA_MODELS.search(norm):
+        iface = "sata"
+    elif re.search(r"nvme|pci\s?e|\bgen\s?[345]\b|\bm[. ]?2\b", norm) or PART_SSD_NVME_MODELS.search(norm):
+        iface = "nvme"
+    else:
+        iface = None
+    return int(max(sizes)), iface
+
+
+def part_ssd_value(gb, iface, cfg):
+    """Reference price of an SSD: that of its capacity class (960GB counts as 1TB), scaled up for odd larger sizes."""
+    table = (cfg["parts"].get("ssd_eur") or {}).get(iface or "sata") or {}
+    fit = [c for c in sorted(int(k) for k in table) if gb * 1.08 >= c]
+    if not fit:
+        return 0.0
+    c = fit[-1]
+    return float(table[str(c)]) * (gb / c if gb > c * 1.08 else 1.0)
+
+
+def part_read(norm, cfg):
+    """What part an advert offers -> dict(name, value, notes), dict(name, skip=reason) for a recognised part
+    that is not wanted, dict(skip=reason) for something that is no single part, or None (nothing recognised)."""
+    pcfg = cfg["parts"]
+    rates = pcfg.get("ram_eur_per_gb", {})
+    cpu = pc_find_cpu(norm, cfg)
+    board = part_board(norm, cfg)
+    if board and PART_NOT_PC_BOARD.search(norm):
+        return {"skip": "a phone's mainboard"}
+    if board and cpu and PART_SUPPORTS.search(norm):
+        cpu = None   # the board is offered; the processor is only what it supports
+    models = {m.group(3) for m in PC_RYZEN.finditer(norm)} | {m.group(1) for m in PC_RYZEN_BARE.finditer(norm)} | \
+        {m.group(2) for m in PC_INTEL.finditer(norm)}
+    if cpu and len(models) > 1:
+        return {"skip": "names several processors - a list to choose from"}
+    gpu = pc_find_gpu(norm, cfg)
+    ram = part_ram(gpu[3] if gpu else norm)
+    drive = bool(PART_STORAGE.search(norm))
+    bundle_word = bool(PART_BUNDLE_WORD.search(norm))
+    if cpu and cpu["mobile"]:
+        return {"skip": "laptop processor"}
+    if cpu or board:
+        if drive and not bundle_word:
+            return {"skip": "names a drive too - a whole computer"}
+        if cpu and not board and not bundle_word:
+            if gpu or ram:
+                return {"skip": "processor with RAM or a graphics card but no board - a whole computer"}
+            eur, watched = part_cpu_value(cpu, cfg)
+            name = "CPU " + cpu["label"]
+            if not watched:
+                return {"name": name, "skip": "processor not on the watch list"}
+            return {"name": name, "value": eur, "notes": [part_cpu_socket(cpu)],
+                    "tag": part_cpu_socket(cpu).split(",")[0]}
+        if board and not cpu:
+            # a board on its own. A size in GB in its title is the most RAM it takes, not RAM that comes with it
+            if gpu:
+                return {"skip": "board with a graphics card - not valued"}
+            chip, socket, rtyp = board
+            name = f"Board {chip.upper()} ({socket})"
+            notes = [f"takes {rtyp.upper()}" if rtyp else "DDR4 or DDR5 model - check which"]
+            return {"name": name, "value": float(pcfg["board_eur"][chip]), "notes": notes, "tag": socket}
+        # several parts in one advert: processor + board (+ RAM, + graphics card)
+        lines, notes, names = [], [], [cpu["label"]]
+        value, watched = part_cpu_value(cpu, cfg)
+        lines.append(f"{cpu['label']} {value:.0f}")
+        if board:
+            eur = float(pcfg["board_eur"][board[0]])
+            value += eur
+            lines.append(f"{board[0].upper()} board {eur:.0f}")
+            names.append(board[0].upper())
+        else:
+            notes.append("board not recognised - not counted")
+            names.append("board")
+        if ram:
+            typ = ram["type"] or (board[2] if board else None) or cpu["ram"]
+            rate = float(rates.get(typ, 0))
+            value += ram["gb"] * rate
+            lines.append(f"{ram['gb']}GB {typ.upper() if typ else 'RAM'} {ram['gb'] * rate:.0f}")
+            names.append(f"{ram['gb']}GB")
+        if gpu:
+            # with a graphics card it is a PC without a case; the card tables hold used prices, these new ones
+            return {"name": "Bundle " + " + ".join(names + [gpu[0]]), "skip": "bundle with a graphics card - not valued"}
+        if drive:
+            notes.append("the drive it names is not counted")
+        name = "Bundle " + " + ".join(names)
+        if not watched:
+            return {"name": name, "skip": "bundle around a processor that is not on the watch list"}
+        return {"name": name, "value": value, "notes": ["parts: " + " + ".join(lines)] + notes,
+                "tag": part_cpu_socket(cpu).split(",")[0]}
+    if gpu:
+        return {"skip": "a graphics card"}
+    ssd = part_ssd(norm)
+    if ram and PART_RAM_WORD.search(norm) and not PART_RAM_NOT_RAM.search(norm) and not bundle_word:
+        if drive or ssd:
+            return {"skip": "names RAM and a drive - a whole computer"}
+        typ, mhz = ram["type"], ram["mhz"]
+        name = f"RAM {ram['gb']}GB {typ.upper() if typ else ''}".strip() + (f"-{mhz}" if mhz else "")
+        if not ram["desktop"]:
+            return {"name": name, "skip": "laptop or server RAM"}
+        if typ not in ("ddr4", "ddr5"):
+            # no type and no speed to tell it from: "128GB" next to the word RAM is then often something else
+            return {"name": name, "skip": "old RAM type" if typ else "DDR type not stated"}
+        if ram["gb"] < int(pcfg.get("ram_min_gb", 16)):
+            return {"name": name, "skip": f"under {pcfg.get('ram_min_gb', 16)}GB"}
+        slow = int((pcfg.get("ram_min_mhz") or {}).get(typ, 0))
+        if mhz and mhz < slow:
+            return {"name": name, "skip": f"slower than {slow} MHz"}
+        notes = [] if mhz else ["speed not stated - ask for it"]
+        return {"name": name, "value": ram["gb"] * float(rates.get(typ, 0)), "notes": notes, "tag": typ}
+    if ssd:
+        gb, iface = ssd
+        size = f"{gb / 1000:g}TB" if gb >= 1000 else f"{gb}GB"
+        name = f"SSD {size} {'NVMe' if iface == 'nvme' else 'SATA' if iface == 'sata' else ''}".strip()
+        if gb < int(pcfg.get("ssd_min_gb", 900)):
+            return {"name": name, "skip": f"under {pcfg.get('ssd_min_gb', 900)}GB"}
+        notes = [] if iface else ["NVMe or SATA not stated - priced as SATA"]
+        notes.append("if used: ask for a CrystalDiskInfo screenshot (health, hours on)")
+        return {"name": name, "value": part_ssd_value(gb, iface, cfg), "notes": notes, "tag": iface or "sata"}
+    return None
+
+
+def classify_part(listing, cfg):
+    """A processor, motherboard, RAM kit, SSD or processor + board bundle -> (name for the alert, verdict, notes).
+    verdict in {'deal','above','skip'}; nothing recognised = (None, 'skip', ...).
+    Sets listing['ceiling'] = the most it may cost to count as a deal, and listing['part_value'] = its new price."""
+    pcfg = cfg["parts"]
+    for rx in pcfg["_exclude"]:
+        if rx.search(listing["title"]):
+            return None, "skip", [f"excluded by /{rx.pattern}/"]
+    norm = normalise_title(listing["title"])
+    if PART_COMPUTER.search(norm):
+        return None, "skip", ["a whole computer, not a part"]
+    part = part_read(norm, cfg)
+    if not part or "name" not in part:
+        return None, "skip", [part["skip"] if part else "no watched part in the title"]
+    pseudo = {"name": part["name"]}
+    if "skip" in part:
+        return pseudo, "skip", [part["skip"]]
+    value, price = part["value"], listing["price"]
+    if value <= 0:
+        return pseudo, "skip", ["no reference price known for this part"]
+    if price is None or price <= 0:
+        return pseudo, "skip", ["no price"]
+    ceiling = value * float(listing.get("part_ratio") or pcfg.get("max_price_ratio", 1.0))
+    older = part_is_older(part.get("tag", ""), cfg)
+    if older:
+        # an older generation is only worth an alert when it is much cheaper
+        ceiling *= float(pcfg.get("older_generation_ratio", 1.0) or 1.0)
+        pseudo["older"] = True
+    listing["ceiling"], listing["part_value"] = ceiling, value
+    if price > ceiling:
+        return pseudo, "above", [f"{price:.0f} > ceiling {ceiling:.0f} (new from {value:.0f})"]
+    head = [f"new it costs from about {value:.0f} in Cyprus - this is {round((1 - price / value) * 100)}% under that"]
+    scam = float(pcfg.get("junk_ratio", 0.4) if listing.get("skip_if_suspiciously_cheap") else pcfg.get("scam_ratio", 0.25))
+    if price < value * scam:
+        if listing.get("skip_if_suspiciously_cheap"):
+            return pseudo, "skip", [f"{price:.0f} is under {scam:g} x its new price ({value:.0f}) - an accessory, "
+                                    "a box or a fake"]
+        head.append("SUSPICIOUSLY CHEAP - likely a scam or not the part itself, never pay in advance")
+    elif price <= ceiling * cfg.get("great_deal_ratio", 0.8):
+        head.append("GREAT DEAL")
+    if older:
+        head.append(f"older generation ({str(part['tag']).upper()}) - shown only because it is this cheap")
+    return pseudo, "deal", head + part["notes"]
+
+
+def part_price_cut(lst, part, verdict, prev, cfg):
+    """A shop cut the price of a watched part by parts.shop_cut_pct or more since the bot first saw it, without
+    reaching the deal ceiling (then it alerts as a normal deal). Returns an alert tuple for send_alerts or None."""
+    pct = float((cfg.get("parts") or {}).get("shop_cut_pct") or 0)
+    if not pct or not part or part.get("older") or verdict != "above" or not prev or not lst.get("price"):
+        return None   # (a price cut on an older-generation part is not news; a real bargain alerts as a deal)
+    ref = prev.get("first_price") or prev.get("price")
+    if not ref or (1 - lst["price"] / ref) * 100 < pct:
+        return None
+    if prev.get("cut_alerted") and lst["price"] > prev["cut_alerted"] * 0.97:
+        return None   # already alerted for this cut and it has not dropped meaningfully further
+    head = (f"[SHOP PRICE CUT] {part['name']} - EUR {lst['price']:.0f}, down {(1 - lst['price'] / ref) * 100:.0f}% "
+            f"from {ref:.0f} on {lst['site']}")
+    notes = [f"the cheapest new price the bot knew for this part was about {lst.get('part_value', 0):.0f}"] + \
+        list(lst.get("extra_notes") or [])
+    return "\n".join([head, lst["title"], "Notes: " + "; ".join(notes), lst["url"]]), lst, part
+
+
+def part_ebay_jobs(cfg):
+    """eBay searches for the watched parts -> [(query, category id, highest price worth looking at)].
+    Model numbers are packed into OR queries, cheapest first, so each query has a tight price cap."""
+    pcfg = cfg["parts"]
+    ratio = float(pcfg.get("ebay_price_ratio", 0.8))
+    jobs = []
+
+    def pack(pairs, category):
+        q, cap = [], 0.0
+        for term, eur in sorted(pairs, key=lambda p: p[1]):
+            if q and len(", ".join(q + [term])) > 90:
+                jobs.append(("(" + ", ".join(q) + ")", category, cap * ratio))
+                q, cap = [], 0.0
+            q.append(term)
+            cap = max(cap, eur)
+        if q:
+            jobs.append(("(" + ", ".join(q) + ")", category, cap * ratio))
+
+    cpus = []
+    for key, eur in pcfg.get("cpu_eur", {}).items():
+        cpus.append((key, float(eur)))
+        if re.fullmatch(r"\d{5}k?|\d{3}k?", key) and key + "f" not in pcfg["cpu_eur"]:
+            cpus.append((key + "f", float(eur)))   # Intel F / KF model without its own entry
+    pack(cpus, EBAY_PART_CATEGORIES["cpu"])
+    boards = []
+    for chip, eur in pcfg.get("board_eur", {}).items():
+        boards += [(chip, float(eur)), (chip + "m", float(eur))]   # B550M...: the micro-ATX models
+    pack(boards, EBAY_PART_CATEGORIES["board"])
+    for typ, rate in pcfg.get("ram_eur_per_gb", {}).items():
+        for gb in pcfg.get("ebay_ram_sizes", [16, 32, 64]):
+            if gb >= int(pcfg.get("ram_min_gb", 16)):
+                jobs.append((f"{typ} {gb}gb", EBAY_PART_CATEGORIES["ram"], gb * float(rate) * ratio))
+    for iface, table in (pcfg.get("ssd_eur") or {}).items():
+        for size, eur in table.items():
+            tb = f"{int(size) / 1000:g}tb"
+            jobs.append((f"nvme {tb}" if iface == "nvme" else f"ssd sata {tb}", EBAY_PART_CATEGORIES["ssd"],
+                         float(eur) * ratio))
+    return jobs
+
+
+def ebay_parts_scan(cfg):
+    """The watched parts on eBay (official Browse API, same keys as the card search) -> ([listing], error or None)."""
+    pcfg = cfg["parts"]
+    mark = {"name": "_parts"}
+    found, err = ebay_scan(cfg, [(q, cat, cap, mark) for q, cat, cap in part_ebay_jobs(cfg)], excl=pcfg["_exclude"])
+    ratio = float(pcfg.get("ebay_price_ratio", 0.9) or 0.9)
+    out = []
+    for lst, _ in found:
+        if pcfg.get("ebay_eu_sellers_only", True) and lst.get("country") not in EU_COUNTRIES:
+            continue   # sellers outside the EU: weeks of shipping, customs, and most fake SSDs and RAM
+        if any("several variants" in n for n in lst.get("extra_notes") or []):
+            continue   # the price shown is that of the cheapest variant, not of the part in the title
+        lst["kind"], lst["src"], lst["part_ratio"] = "part", "ebay", ratio
+        out.append(lst)
+    return out, err
+
+
 # ------------------------------------------------------------------------ matching
 def compile_config(cfg):
     cfg["_exclude"] = [re.compile(p, re.I) for p in cfg.get("exclude_title_patterns", [])]
@@ -1036,6 +1485,12 @@ def compile_config(cfg):
     pcfg["_oem"] = re.compile(pcfg["oem_title_pattern"], re.I) if pcfg.get("oem_title_pattern") else None
     for g in pcfg.get("other_gpus", []):
         g["_re"] = re.compile(g["pattern"], re.I)
+    parts = cfg.setdefault("parts", {})
+    parts["_exclude"] = [re.compile(p, re.I) for p in parts.get("exclude_title_patterns", [])]
+    chips = sorted(parts.get("board_eur", {}), key=len, reverse=True)
+    # B550, B550M, B650E, A620AM, X570S ... : the chipset name plus the letters board makers add to it
+    parts["_board"] = re.compile(r"\b(" + "|".join(map(re.escape, chips)) + r")([a-z]{0,3})\b") if chips else None
+    parts["_platform"] = {c: (socket, ram) for socket, (ram, names) in PART_PLATFORMS.items() for c in names.split()}
     for w in cfg.get("keyword_watches", []):
         w["_re"] = re.compile(w["pattern"], re.I)
         w["_exclude"] = [re.compile(p, re.I) for p in w.get("exclude", [])]
@@ -1215,7 +1670,7 @@ def send_alerts(deals, cfg, dry_run=False):
         return
     toast_on = cfg.get("windows_toast", True)
     if toast_on and len(deals) > 3:
-        notify_toast("GPU deals", f"{len(deals)} matching GPU listings found. Details in alerts.log",
+        notify_toast("GPU Alert Bot", f"{len(deals)} matching listings found. Details in alerts.log",
                      deals[0][1]["url"])
     for text, listing, gpu in deals[:12]:
         if toast_on and len(deals) <= 3:
@@ -1249,10 +1704,17 @@ def scan(cfg, dry_run=False, list_all=False):
     src = cfg.get("sources", {})
     force = dry_run or list_all
     pcs_on = bool((cfg.get("pcs") or {}).get("enabled"))
+    parts_on = bool((cfg.get("parts") or {}).get("enabled"))
     # the shops are read in background threads while the marketplaces are scraped
     shop_pcs = pcs_on and cfg["pcs"].get("shops", True) and \
         pcs_due(cfg, "pcs_shops_last", "shops_every_minutes", 180, force)
-    shop_jobs = start_shops(cfg, with_pcs=shop_pcs) if shops_due(cfg, force=force) else None
+    # parts at the shops: one kind per run (processors, then boards, RAM, SSDs), so a shop run stays short
+    shop_part, shop_part_idx = None, 0
+    if parts_on and cfg["parts"].get("shops", True) and shops_due(cfg, force=force) and \
+            parts_due(cfg, "parts_shops_last", "shops_every_minutes", 60, force):
+        shop_part_idx = int((load_json(STATE_PATH, {}) or {}).get("_meta", {}).get("parts_shop_idx", 0))
+        shop_part = PART_KINDS[shop_part_idx % len(PART_KINDS)]
+    shop_jobs = start_shops(cfg, with_pcs=shop_pcs, part_kind=shop_part) if shops_due(cfg, force=force) else None
     listings = scrape_bazaraki(src.get("bazaraki_pages", 2)) + \
         scrape_vendora(src.get("vendora_pages", 2), src.get("vendora_searches", ["rtx", "radeon"]))
     # complete desktop PCs have their own sections on both marketplaces
@@ -1260,6 +1722,11 @@ def scan(cfg, dry_run=False, list_all=False):
     pc_listings = scrape_pcs(cfg) if ran_pcs else []
     pc_ids = {l["id"] for l in pc_listings}
     listings = [l for l in listings if l["id"] not in pc_ids] + pc_listings
+    # processors, motherboards, RAM and SSDs: bazaraki's own sections plus vendora searches
+    ran_parts = parts_due(cfg, force=force)
+    if ran_parts:
+        known = {l["id"] for l in listings}
+        listings += [l for l in scrape_parts(cfg) if l["id"] not in known]
     # keyword watches: site-wide searches, classified by their own pattern
     gpu_ids = {l["id"] for l in listings}
     watched = []
@@ -1284,28 +1751,50 @@ def scan(cfg, dry_run=False, list_all=False):
                 ne += 1
             else:
                 watched.append((lst, w))
-    shop_counts, shop_pc_counts, ns = {}, {}, 0
+    ran_ebay_parts, ebay_parts_err = False, None
+    if parts_on and cfg["parts"].get("ebay", True) and (cfg.get("ebay") or {}).get("enabled", True) and \
+            all(ebay_creds(cfg)) and parts_due(cfg, "parts_ebay_last", "ebay_every_minutes", 30, force):
+        ran_ebay_parts = True
+        found, ebay_parts_err = ebay_parts_scan(cfg)
+        listings += found
+    shop_counts, shop_pc_counts, shop_part_counts, ns = {}, {}, {}, 0
     if shop_jobs is not None:
-        found, shop_counts, shop_pc_counts = collect_shops(shop_jobs, cfg)
+        found, shop_counts, shop_pc_counts, shop_part_counts = collect_shops(shop_jobs, cfg)
         listings += found
         ns = len(found)
 
     state = load_json(STATE_PATH, {})
     now = dt.datetime.now().isoformat(timespec="seconds")
     deals = []
+    quiet = []   # part deals found on the very first read of a source: logged, not pushed
+    seeded = set(state.get("_meta", {}).get("parts_seeded", []))
     rows = []
     items = [(l, None) for l in listings] + watched
     details_left = int((cfg.get("pcs") or {}).get("detail_fetches_per_scan", 6))
     for lst, watch in items:
         prev = state.get(lst["id"])
-        is_pc = False
+        is_pc = is_part = False
         if watch is None:
-            if lst.get("kind") == "pc":
+            feed = lst.get("kind")   # None = a graphics-card feed, "pc", or "part"
+            local = lst["site"] in ("bazaraki", "vendora")
+            gpu, verdict, notes = None, "skip", []
+            if feed == "pc":
                 is_pc = True
-            else:
+            elif feed == "part":
+                gpu, verdict, notes = classify_part(lst, cfg)
+                is_part = True
+            if feed is None or (feed == "part" and gpu is None and local
+                                and not PART_RAM_WORD.search(normalise_title(lst["title"]))):
+                # a card feed - or, in a marketplace's parts section, an advert that is no part and
+                # may be a graphics card or PC filed in the wrong place
                 gpu, verdict, notes = classify(lst, cfg)
                 # a whole PC in the graphics-card feeds (skipped there as "not a card")
                 is_pc = pcs_on and verdict == "skip" and gpu is None and pc_in_card_feed(lst, cfg)
+                is_part = False
+                if feed is None and parts_on and local and not is_pc and verdict == "skip" and gpu is None:
+                    # vendora lists all components together: a processor, board, RAM or SSD among the cards
+                    gpu, verdict, notes = classify_part(lst, cfg)
+                    is_part = gpu is not None
             if is_pc:
                 if prev and "desc" in prev:
                     lst["desc"] = prev["desc"]
@@ -1329,16 +1818,22 @@ def scan(cfg, dry_run=False, list_all=False):
                 kind = "new"
             elif not prev.get("alerted") and prev.get("price") is not None and lst["price"] < prev["price"]:
                 kind = "drop"
-            elif not prev.get("alerted") and is_pc:
-                # seen before, but a deal only now: first read as a PC, the seller's description
-                # was read, or the pcs settings were loosened
+            elif not prev.get("alerted") and (is_pc or is_part):
+                # seen before, but a deal only now: first read as a PC or part, the seller's description
+                # was read, or the settings were loosened
                 kind = "new"
             if kind:
-                deals.append((format_deal(lst, gpu, notes, kind), lst, gpu))
+                first_read = is_part and lst.get("src", "market") not in seeded
+                (quiet if first_read else deals).append((format_deal(lst, gpu, notes, kind), lst, gpu))
         is_shop = watch is None and lst["site"] in SHOPS
-        biz = business_drop(lst, gpu, verdict, prev, cfg) if is_shop and not is_pc else None
+        biz = business_drop(lst, gpu, verdict, prev, cfg) if is_shop and not is_pc and not is_part else None
         if biz:
             deals.append(biz)
+        cut = part_price_cut(lst, gpu, verdict, prev, cfg) if is_shop and is_part else None
+        if cut:
+            deals.append(cut)
+        if watch is None and lst.get("kind") == "part" and gpu is None and not is_pc:
+            continue   # nothing recognised in a parts feed: not worth remembering
         if not dry_run:
             entry = prev or {"first_seen": now, "title": lst["title"][:100], "site": lst["site"]}
             if is_shop and entry.get("first_price") is None:
@@ -1349,10 +1844,14 @@ def scan(cfg, dry_run=False, list_all=False):
                 entry["pc"] = True
                 if "desc" in lst:
                     entry["desc"] = lst["desc"]
+            if is_part:
+                entry["part"] = True
             if verdict == "deal":
                 entry["alerted"] = True
             if biz:
                 entry["biz_alerted"] = lst["price"]
+            if cut:
+                entry["cut_alerted"] = lst["price"]
             state[lst["id"]] = entry
     if ran_ebay and not dry_run:
         meta = state.setdefault("_meta", {})
@@ -1367,24 +1866,52 @@ def scan(cfg, dry_run=False, list_all=False):
             state["_meta"]["pcs_shops_last"] = time.time()
     if ran_pcs and not dry_run:
         state.setdefault("_meta", {})["pcs_last"] = time.time()
+    if parts_on and not dry_run:
+        meta = state.setdefault("_meta", {})
+        if ran_parts:
+            meta["parts_last"] = time.time()
+            seeded.add("market")
+        if ran_ebay_parts:
+            meta["parts_ebay_last"] = time.time()
+            if not ebay_parts_err:
+                seeded.add("ebay")
+        if shop_jobs is not None and shop_part:
+            meta["parts_shops_last"] = time.time()
+            meta["parts_shop_idx"] = shop_part_idx + 1
+            seeded.add("shop:" + shop_part)
+        meta["parts_seeded"] = sorted(seeded)
     if not dry_run:
         cutoff = (dt.datetime.now() - dt.timedelta(days=90)).isoformat()
         state = {k: v for k, v in state.items() if v.get("last_seen", now) >= cutoff}
         save_json(STATE_PATH, state)
 
     npc = sum(1 for l in listings if l.get("kind") == "pc")
-    nb = sum(1 for l in listings if l["site"] == "bazaraki" and l.get("kind") != "pc")
-    nv = sum(1 for l in listings if l["site"] == "vendora" and l.get("kind") != "pc")
-    ns -= sum(1 for l in listings if l.get("kind") == "pc" and l["site"] in SHOPS)
+    npart = sum(1 for l in listings if l.get("kind") == "part")
+    nb = sum(1 for l in listings if l["site"] == "bazaraki" and not l.get("kind"))
+    nv = sum(1 for l in listings if l["site"] == "vendora" and not l.get("kind"))
+    ns -= sum(1 for l in listings if l.get("kind") and l["site"] in SHOPS)
     ebay_txt = f", {ne} ebay" if ran_ebay else ""
     shop_txt = f", {ns} in stock at shops" if shop_jobs is not None else ""
     pc_txt = f" + {npc} ready PCs" if npc else ""
-    log(f"scanned {len(listings) - npc} GPU listings ({nb} bazaraki, {nv} vendora{ebay_txt}{shop_txt}){pc_txt} + "
-        f"{len(watched)} keyword-search results -> {len(deals)} new deal(s)")
+    part_txt = f" + {npart} part listings" if npart else ""
+    quiet_txt = f" (+ {len(quiet)} part deal(s) from a first read: in alerts.log, not sent)" if quiet else ""
+    log(f"scanned {len(listings) - npc - npart} GPU listings ({nb} bazaraki, {nv} vendora{ebay_txt}{shop_txt}){pc_txt}"
+        f"{part_txt} + {len(watched)} keyword-search results -> {len(deals)} new deal(s){quiet_txt}")
     if shop_counts:
         log("shops (cards read): " + ", ".join(f"{k} {v}" for k, v in shop_counts.items()))
     if shop_pcs and any(shop_pc_counts.values()):
         log("shops (complete PCs read): " + ", ".join(f"{k} {v}" for k, v in shop_pc_counts.items()))
+    if shop_part and any(shop_part_counts.values()):
+        log(f"shops ({shop_part} listings read): " + ", ".join(f"{k} {v}" for k, v in shop_part_counts.items()))
+    if ebay_parts_err:
+        log(f"eBay parts search failed: {ebay_parts_err}")
+    # the first read of a source finds every advert that is already there: keep those off the phone
+    for text, _lst, _part in quiet:
+        line = "[FIRST READ, NOT SENT] " + text.replace("\n", " | ")
+        if dry_run:
+            print("WOULD LOG ONLY: " + line)
+        else:
+            log(line, ALERT_LOG)
     empty = [s for s, n in [("bazaraki", nb), ("vendora", nv)] + list(shop_counts.items()) if n == 0]
     if empty and not dry_run:
         # a site returned nothing: blocked, down or changed layout. Warn on Telegram at most once a day.

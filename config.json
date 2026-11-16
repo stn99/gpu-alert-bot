@@ -142,6 +142,64 @@
       "\\bwtb\\b", "looking for", "ζητ", "\\bwanted\\b"
     ]
   },
+  "parts": {
+    "_help": "Single parts for a platform upgrade: processors, motherboards, desktop RAM and SSDs, plus processor + board (+ RAM) bundles. Every part on the lists below has a reference price = the cheapest it costs NEW in Cyprus. You get an alert when a local advert (bazaraki, vendora) costs at most max_price_ratio x that price (0.75 = at least a quarter cheaper than new), an eBay offer delivered to Cyprus at most ebay_price_ratio x, or a shop's own price at most shops_price_ratio x. GREAT DEAL marks anything at or under 80% of that ceiling. shop_cut_pct: a shop that cuts a watched part by this many percent since the bot first saw it alerts as [SHOP PRICE CUT] even when it stays above the ceiling (0 = off). A processor that is not in cpu_eur and a chipset that is not in board_eur never alert. RAM: desktop DDR4 / DDR5 with ram_min_gb or more in total, priced per GB; laptop (SO-DIMM) and server (ECC) RAM is skipped, and so is DDR4 slower than ram_min_mhz.ddr4. SSD: internal drives of ssd_min_gb or more, priced by capacity class (the keys of ssd_eur are GB). A bundle is compared with the sum of its parts and only counts when its processor is on the list. A local advert under scam_ratio x the new price is tagged SUSPICIOUSLY CHEAP; a shop or eBay item under junk_ratio x the new price is skipped (an accessory for the part, an empty box or a fake), and so is an eBay listing with several variants (its price is that of the cheapest variant).",
+    "_help_sources": "bazaraki's processor, motherboard, RAM and SSD sections (bazaraki_pages each) plus vendora (its component feed and vendora_searches) every every_minutes. eBay through the official API every ebay_every_minutes, sellers in the EU only unless ebay_eu_sellers_only is false. The four shops: one kind of part per run every shops_every_minutes (processors, boards, RAM, SSDs in turn), so each kind is refreshed about every 4 hours. The first read of each source only writes what it finds to alerts.log (marked FIRST READ) instead of sending it to you.",
+    "_help_generation": "The build should last many years, so the current generation is preferred: the sockets, RAM type and SSD interface in current_generation alert at the normal ratios. Everything else on the lists (AM4 and LGA1700 processors and boards, DDR4, SATA SSDs) is an older generation: its ceiling is multiplied by older_generation_ratio (0.8 = an older part must be at least 40% under its new price in a local advert), so it only shows up when it is a very good deal, and shop price cuts are not reported for it. Set older_generation_ratio to 1.0 to treat all generations alike.",
+    "current_generation": ["AM5", "LGA1851", "DDR5", "NVMe"],
+    "older_generation_ratio": 0.8,
+    "enabled": true,
+    "max_price_ratio": 0.75,
+    "ebay_price_ratio": 0.7,
+    "shops_price_ratio": 0.85,
+    "shop_cut_pct": 15,
+    "scam_ratio": 0.25,
+    "junk_ratio": 0.4,
+    "every_minutes": 10,
+    "bazaraki_pages": 2,
+    "vendora_searches": ["ryzen", "intel core", "motherboard", "ddr4", "ddr5", "nvme", "ssd"],
+    "ebay": true,
+    "ebay_every_minutes": 30,
+    "ebay_eu_sellers_only": true,
+    "ebay_ram_sizes": [16, 32, 64],
+    "shops": true,
+    "shops_every_minutes": 60,
+    "ram_min_gb": 16,
+    "ram_min_mhz": {"ddr4": 3000, "ddr5": 0},
+    "ssd_min_gb": 900,
+    "_help_prices": "All prices: the cheapest NEW price in stock in Cyprus on 2026-11-16 (Armenius, Bionic, Custom PC, ComputerG and the dealers on bazaraki). Parts no longer sold new (Ryzen 5700X3D, 5900X, 7600X3D, 7950X; B450, X470, X570, X670, B660, H670, Z690 boards) carry an estimate, and an older model is never priced above a newer, faster one. Used prices on eBay were no use as a reference: delivered to Cyprus they were higher than new parts bought here. Prices move fast in this RAM and SSD shortage, so refresh the tables every few weeks. cpu_eur keys are model numbers: Ryzen 4 digits, Intel Core 5 digits, Core Ultra 3 digits; an Intel F model without its own entry is priced like the model with graphics. board_eur: the cheapest board with that chipset. ram_eur_per_gb: desktop kits per GB. ssd_eur: per capacity class in GB.",
+    "cpu_eur": {
+      "5600": 139, "5600x": 127, "5700x": 178, "5700x3d": 330, "5800x": 204, "5800x3d": 377, "5900x": 300, "5950x": 384,
+      "7500f": 128, "7600": 193, "7600x": 164, "7500x3d": 254, "7600x3d": 290, "7700": 212, "7700x": 255, "7800x3d": 332,
+      "7900": 300, "7900x": 307, "7900x3d": 595, "7950x": 400, "7950x3d": 500,
+      "9600": 229, "9600x": 180, "9700x": 282, "9800x3d": 419, "9850x3d": 451, "9900x": 357, "9900x3d": 539,
+      "9950x": 516, "9950x3d": 635,
+      "12400": 176, "12400f": 122, "12600k": 220, "12600kf": 184, "12700": 290, "12700f": 277, "12700k": 278,
+      "12700kf": 239, "12900k": 335, "12900kf": 335,
+      "13400": 188, "13400f": 188, "13500": 280, "13600k": 250, "13600kf": 210, "13700": 320, "13700f": 298,
+      "13700k": 330, "13700kf": 299, "13900k": 450, "13900kf": 430,
+      "14400": 164, "14400f": 141, "14500": 291, "14600k": 246, "14600kf": 221, "14700": 335, "14700f": 332,
+      "14700k": 365, "14700kf": 352, "14900k": 481, "14900kf": 453,
+      "225": 219, "225f": 182, "235": 349, "245k": 195, "245kf": 181, "250k": 240, "250kf": 217,
+      "265": 290, "265f": 275, "265k": 293, "265kf": 275, "270k": 340, "285k": 629
+    },
+    "board_eur": {
+      "a520": 70, "b450": 65, "b550": 85, "x470": 80, "x570": 130,
+      "a620": 89, "b650": 108, "x670": 190, "b840": 117, "b850": 139, "x870": 233,
+      "h610": 60, "b660": 95, "b760": 95, "h670": 120, "h770": 150, "z690": 170, "z790": 189,
+      "h810": 98, "b860": 115, "z890": 215
+    },
+    "ram_eur_per_gb": {"ddr4": 9.0, "ddr5": 17.0},
+    "ssd_eur": {"nvme": {"1000": 159, "2000": 259, "4000": 561}, "sata": {"1000": 139, "2000": 250}},
+    "exclude_title_patterns": [
+      "for parts", "for repair", "spare parts", "faulty", "not working", "non[- ]?functional", "\\bbroken\\b", "defe[ck]t",
+      "kaputt", "bastler", "ungepr[üu]ft", "untested", "μη λειτουργ", "χαλασμ", "bent pin", "στραβωμ", "verbogen",
+      "box only", "empty box", "\\bpackaging\\b", "nur (ovp|karton|verpackung)", "leerkarton", "verkaufskarton", "keychain",
+      "schl[üu]sselanh", "delid", "gek[öo]pft", "\\bplatine\\b", "\\bpcb\\b", "wi-?fi[ -]?(card|karte|modul)", "\\bkabel\\b",
+      "\\bcable\\b", "i/?o[ -]?(shield|blende)", "\\bblende\\b", "backplate",
+      "\\bwtb\\b", "looking for", "ζητ", "\\bwanted\\b", "\\bsuche\\b"
+    ]
+  },
   "keyword_watches": [
     {
       "name": "DF64 coffee grinder",
